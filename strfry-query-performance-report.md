@@ -5,6 +5,7 @@ Queries with `until` filters become progressively slower when fetching older eve
 
 ## Environment
 - Remote relay: strfry (wss://nip85.brainstorm.world)
+  - Hardware: DigitalOcean droplet, 8GB RAM, SSD storage
 - Client: nostr-tools SimplePool.querySync()
 - Query: `{ kinds: [30382], authors: ["48ec018359cac3c933f0f7a14550e36a4f683dcf55520c916dd8c61e7724f5de"], until: <timestamp>, limit: 500 }`
 - Known event count: ~200,000 events matching this filter
@@ -22,14 +23,17 @@ Pagination working backward from present (until = now, decrementing):
 | -3hr | 17s | 400-470 | Approaching timeout limits |
 | -4.5hr | 24-25s | 400-476 | Near timeout limit (30s) |
 | -5hr+ | 26-27s | 410-490 | Consistently near timeout |
+| -6hr+ | 28-29s | 450-485 | 96% of timeout limit |
 | Older | Timeout | 0 | Eventually returns empty |
 
 ### Actual Results
 - **With 4.4s timeout**: Retrieved 28,000 events before timing out
 - **With 8.8s timeout**: Retrieved 40,000 events before timing out  
-- **With 30s timeout**: Retrieved 83,000+ events (ongoing), queries now at 26-27s
+- **With 30s timeout**: Retrieved 100,000+ events (ongoing), but all queries timeout at 30s
 
-Query duration increases exponentially as we go back in time. At 83k events retrieved (roughly 5 hours of history), queries are taking 26-27 seconds - consistently near the 30 second timeout limit. This represents only ~41% of the known 200k total events. At this rate, queries will exceed the timeout before retrieving the remaining ~117k events.
+Query duration increases exponentially as we go back in time. At ~100k events retrieved (roughly 7 hours of history), every query times out at exactly 30 seconds, returning progressively fewer events per page (500 → 280 events) as timeout cuts off responses earlier. This represents only ~50% of the known 200k total events - making it impossible to retrieve the full historical dataset via standard queries with any reasonable timeout.
+
+Hardware specs (8GB RAM, SSD) should be adequate for query performance, suggesting the bottleneck is LMDB-specific behavior rather than raw storage speed.
 
 ## Hypothesis
 This could be due to:

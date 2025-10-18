@@ -115,8 +115,22 @@ const start = async () => {
   }
 }
 
+let isShuttingDown = false;
+
 const shutdown = async () => {
-  console.log('Shutting down...');
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  
+  console.log('\nShutting down gracefully...');
+  
+  // Stop accepting new work
+  if (relayListener) {
+    relayListener.close();
+  }
+  
+  // Give ongoing operations time to complete
+  await new Promise(resolve => setTimeout(resolve, 2000));
+  
   await server.close();
   process.exit(0);
 };
