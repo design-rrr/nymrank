@@ -1,0 +1,32 @@
+{
+  "name": "nymrank-boost",
+  "version": "1.0.0",
+  "description": "NymRank Boost - Developer tool for Nostr apps to integrate name reputation and referrals",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "test": "jest"
+  },
+  "keywords": [
+    "nostr",
+    "reputation",
+    "names",
+    "boost",
+    "referrals"
+  ],
+  "author": "NymRank",
+  "license": "MIT",
+  "dependencies": {
+    "@shocknet/clink-sdk": "^1.0.0",
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1",
+    "jest": "^29.7.0"
+  }
+}
+
+
