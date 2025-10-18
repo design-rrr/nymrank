@@ -17,16 +17,16 @@ class ProfileHandler {
       return;
     }
 
-    this.log.info(`Fetching profile events for ${pubkeys.length} pubkeys...`);
+    console.log(`\n[Profile Fetch] Starting: ${pubkeys.length} total ranked users`);
     
     // Filter out pubkeys we already have profiles for (with timestamp check)
     const newPubkeys = await this.database.filterNewPubkeys(pubkeys);
     if (newPubkeys.length === 0) {
-      this.log.info('All pubkeys already have profiles, skipping fetch.');
+      console.log('[Profile Fetch] All profiles already cached, skipping.');
       return;
     }
     
-    this.log.info(`Fetching profiles for ${newPubkeys.length} new pubkeys (${pubkeys.length - newPubkeys.length} already cached)...`);
+    console.log(`[Profile Fetch] Need to fetch: ${newPubkeys.length} profiles (${pubkeys.length - newPubkeys.length} already cached)\n`);
     
     // Batch requests to avoid "filter too large" errors
     const BATCH_SIZE = 100;
@@ -34,7 +34,11 @@ class ProfileHandler {
     
     for (let i = 0; i < newPubkeys.length; i += BATCH_SIZE) {
       const batch = newPubkeys.slice(i, i + BATCH_SIZE);
-      this.log.info(`Fetching profile batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(newPubkeys.length / BATCH_SIZE)} (${batch.length} pubkeys)...`);
+      const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+      const totalBatches = Math.ceil(newPubkeys.length / BATCH_SIZE);
+      const progressPct = Math.round((i / newPubkeys.length) * 100);
+      
+      console.log(`[Profile Fetch] Batch ${batchNum}/${totalBatches} (${progressPct}% - ${i}/${newPubkeys.length} processed)`);
       
       const batchEvents = await this.eventFetcher.fetchLatestEvents(KIND_PROFILE, batch);
       allProfileEvents.push(...batchEvents);
@@ -45,7 +49,7 @@ class ProfileHandler {
       }
     }
     
-    this.log.info(`Found ${allProfileEvents.length} profile events across ${Math.ceil(newPubkeys.length / BATCH_SIZE)} batches.`);
+    console.log(`\n[Profile Fetch] Complete! Fetched ${allProfileEvents.length} profiles from ${newPubkeys.length} queries.\n`);
     
     // Record which pubkeys we queried and their profile timestamps
     const profileTimestamps = new Map();

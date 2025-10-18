@@ -24,33 +24,24 @@ class RelayListener {
 
   async initializeSubscriptions() {
     try {
-      // Step 1: Get committee members and fetch delegation events
-      const committeePubkeys = ['3316e3696de74d39959127b9d842df57bddc5d1c7af8a04f1bc7aed80b445088']; // Temporary: Justin only for testing
-      this.log.info(`Found ${committeePubkeys.length} active committee members (testing Justin only).`);
-
-      await this.subscribeToDelegations(committeePubkeys);
+      // Skip attestation backfill - assume JSONL import has been run
+      this.log.info('Skipping attestation backfill (use JSONL import for initial sync)');
+      
+      // Get all ranked users from the database
+      const rankedUsers = await this.database.query('SELECT DISTINCT ranked_user_pubkey FROM user_rankings');
+      const rankedPubkeys = rankedUsers.rows.map(r => r.ranked_user_pubkey);
+      
+      this.log.info(`Found ${rankedPubkeys.length} ranked users in database`);
+      
+      if (rankedPubkeys.length > 0) {
+        await this.subscribeToProfiles(rankedPubkeys);
+      } else {
+        this.log.warn('No ranked users found - run JSONL import first');
+      }
 
     } catch (error) {
       this.log.error('Failed to start relay listener:', error);
       throw error;
-    }
-  }
-
-  async subscribeToDelegations(committeePubkeys) {
-    await this.delegationHandler.fetchAndProcessDelegations(committeePubkeys);
-
-    // Fetch all known service pubkeys from delegations
-    const servicePubkeys = await this.database.getServicePubkeys();
-    this.log.info(`Using service pubkeys from delegations: ${servicePubkeys.length} services.`);
-
-    this.subscribeToRankings(servicePubkeys);
-  }
-
-  async subscribeToRankings(servicePubkeys) {
-    const rankedPubkeys = await this.rankingHandler.fetchAndProcessRankings(servicePubkeys);
-
-    if (rankedPubkeys.length > 0) {
-      this.subscribeToProfiles(rankedPubkeys);
     }
   }
 

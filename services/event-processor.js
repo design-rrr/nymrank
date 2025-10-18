@@ -5,9 +5,6 @@ class EventProcessor {
   }
 
   async processEvents(events, kind) {
-    this.log.info(`[Processing] Starting to process ${events.length} events of kind ${kind}.`);
-    let processedCount = 0;
-    
     for (const event of events) {
       try {
         if (kind === 10040) {
@@ -17,13 +14,10 @@ class EventProcessor {
         } else if (kind === 0) {
           await this.handleProfileEvent(event);
         }
-        processedCount++;
       } catch (error) {
         this.log.error({err: error}, `[Processing] Error processing event ${event.id} of kind ${kind}`);
       }
     }
-    
-    this.log.info(`[Processing] Finished processing ${processedCount}/${events.length} events of kind ${kind}.`);
   }
 
   async handleRankingEvent(event) {

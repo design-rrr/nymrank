@@ -32,7 +32,7 @@ const server = fastify({
 
 // --- Services ---
 const database = new Database();
-const relayUrls = ['wss://nip85.brainstorm.world'];
+const relayUrls = ['ws://localhost:7777'];
 const profileRelayUrls = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.snort.social', 'wss://relay.primal.net', 'wss://relay.nostr.band', 'wss://nostrue.com'];
 const relayListener = new RelayListener(relayUrls, profileRelayUrls, database, server.log);
 

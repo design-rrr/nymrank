@@ -21,9 +21,7 @@ class EventFetcher {
       since: lastTimestamp
     };
     
-    this.log.info({filter}, `Fetching latest ${kind} events...`);
     const events = await this.pool.querySync(relayList, filter);
-    this.log.info(`Found ${events.length} latest ${kind} events.`);
     
     return events;
   }

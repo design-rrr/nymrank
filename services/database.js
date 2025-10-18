@@ -226,23 +226,33 @@ class Database {
     if (pubkeys.length === 0) {
       return [];
     }
-    const placeholders = pubkeys.map((_, i) => `$${i + 1}`).join(',');
     
-    // Check both user_names (have profile) and profile_refresh_queue (recently queried)
-    // Don't requery if:
-    // 1. We have their profile already, OR
-    // 2. We queried recently (within last 24 hours) even if they had no profile
-    const query = `
-      SELECT DISTINCT pubkey FROM (
-        SELECT pubkey FROM user_names WHERE pubkey IN (${placeholders})
-        UNION
-        SELECT pubkey FROM profile_refresh_queue 
-        WHERE pubkey IN (${placeholders})
-          AND last_query_attempt > NOW() - INTERVAL '24 hours'
-      ) AS existing_pubkeys
-    `;
-    const result = await this.query(query, pubkeys);
-    const existingPubkeys = new Set(result.rows.map(row => row.pubkey));
+    // Split into chunks to avoid postgres parameter limit (max ~32k parameters)
+    const CHUNK_SIZE = 10000;
+    const existingPubkeys = new Set();
+    
+    for (let i = 0; i < pubkeys.length; i += CHUNK_SIZE) {
+      const chunk = pubkeys.slice(i, i + CHUNK_SIZE);
+      const placeholders1 = chunk.map((_, idx) => `$${idx + 1}`).join(',');
+      const placeholders2 = chunk.map((_, idx) => `$${idx + chunk.length + 1}`).join(',');
+      
+      // Check both user_names (have profile) and profile_refresh_queue (recently queried)
+      // Don't requery if:
+      // 1. We have their profile already, OR
+      // 2. We queried recently (within last 24 hours) even if they had no profile
+      const query = `
+        SELECT DISTINCT pubkey FROM (
+          SELECT pubkey FROM user_names WHERE pubkey IN (${placeholders1})
+          UNION
+          SELECT pubkey FROM profile_refresh_queue 
+          WHERE pubkey IN (${placeholders2})
+            AND last_query_attempt > NOW() - INTERVAL '24 hours'
+        ) AS existing_pubkeys
+      `;
+      const result = await this.query(query, [...chunk, ...chunk]);
+      result.rows.forEach(row => existingPubkeys.add(row.pubkey));
+    }
+    
     return pubkeys.filter(p => !existingPubkeys.has(p));
   }
   
