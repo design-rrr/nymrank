@@ -235,26 +235,31 @@ async function processRankingEvent(event) {
 ## Database Schema (Computed Aggregations Only)
 
 ### User Rankings (from kind 30382 events)
+Stores individual committee member perspectives. Each row represents one committee member's view of one ranked user.
+
+**Key Insight**: The `influence_score` (from `personalizedGrapeRank_influence` tag) is the primary reputation score. This is what we use for name protection decisions. Averaging happens at query time, not storage time.
+
 ```sql
 CREATE TABLE user_rankings (
-    ranked_user_pubkey VARCHAR(64) NOT NULL,
-    service_pubkey VARCHAR(64) NOT NULL,
-    committee_member_pubkey VARCHAR(64) NOT NULL,
-    rank_value INTEGER NOT NULL,
-    hops INTEGER DEFAULT 0,
-    influence_score DECIMAL(20,18),
-    average_score DECIMAL(20,18),
-    confidence_score DECIMAL(20,18),
-    input_value DECIMAL(20,18),
-    pagerank_score DECIMAL(20,18),
-    follower_count INTEGER DEFAULT 0,
-    muter_count INTEGER DEFAULT 0,
-    reporter_count INTEGER DEFAULT 0,
+    ranked_user_pubkey VARCHAR(64) NOT NULL,           -- The user being ranked
+    service_pubkey VARCHAR(64) NOT NULL,               -- Service key that published the ranking
+    committee_member_pubkey VARCHAR(64) NOT NULL,      -- Committee member who delegated to service key
+    rank_value INTEGER NOT NULL,                       -- Raw rank (0-100) from 'rank' tag
+    hops INTEGER DEFAULT 0,                            -- Network distance from 'hops' tag
+    influence_score DOUBLE PRECISION,                  -- PRIMARY SCORE from 'personalizedGrapeRank_influence' tag
+    average_score DOUBLE PRECISION,                    -- From 'personalizedGrapeRank_average' tag
+    confidence_score DOUBLE PRECISION,                 -- From 'personalizedGrapeRank_confidence' tag
+    input_value DOUBLE PRECISION,                      -- From 'personalizedGrapeRank_input' tag
+    pagerank_score DOUBLE PRECISION,                   -- From 'personalizedPageRank' tag
+    follower_count INTEGER DEFAULT 0,                  -- From 'verifiedFollowerCount' tag
+    muter_count INTEGER DEFAULT 0,                     -- From 'verifiedMuterCount' tag
+    reporter_count INTEGER DEFAULT 0,                  -- From 'verifiedReporterCount' tag
+    event_timestamp TIMESTAMP NOT NULL,                -- Timestamp of the kind 30382 event
     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (ranked_user_pubkey, service_pubkey, committee_member_pubkey),
     INDEX idx_ranked_user (ranked_user_pubkey),
     INDEX idx_rank_value (rank_value),
-    INDEX idx_service (service_pubkey),
+    INDEX idx_ranking_service (service_pubkey),
     INDEX idx_committee_member (committee_member_pubkey),
     FOREIGN KEY (committee_member_pubkey) REFERENCES committee_members(pubkey)
 );
@@ -343,37 +348,28 @@ CREATE TABLE profile_refresh_queue (
 );
 ```
 
-### Averaged User Rankings (computed aggregations)
-```sql
-CREATE TABLE averaged_user_rankings (
-    ranked_user_pubkey VARCHAR(64) PRIMARY KEY,
-    average_rank DECIMAL(5,2) NOT NULL,
-    committee_votes INTEGER NOT NULL,
-    max_rank INTEGER NOT NULL,
-    min_rank INTEGER NOT NULL,
-    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_average_rank (average_rank),
-    INDEX idx_committee_votes (committee_votes)
-);
+### Averaged User Rankings (computed on-demand)
+**Note**: We don't store averaged rankings in a table. Instead, we compute averages at query time:
 
--- Query to recompute averaged rankings for a user
-INSERT INTO averaged_user_rankings (ranked_user_pubkey, average_rank, committee_votes, max_rank, min_rank)
+```sql
+-- Query to get averaged influence score for a user (computed on-demand)
 SELECT 
     ranked_user_pubkey,
-    AVG(rank_value) as average_rank,
-    COUNT(*) as committee_votes,
-    MAX(rank_value) as max_rank,
-    MIN(rank_value) as min_rank
+    AVG(influence_score) as avg_influence_score,
+    AVG(rank_value) as avg_rank_value,
+    COUNT(DISTINCT committee_member_pubkey) as committee_votes,
+    MAX(influence_score) as max_influence,
+    MIN(influence_score) as min_influence
 FROM user_rankings 
 WHERE ranked_user_pubkey = ?
-GROUP BY ranked_user_pubkey
-ON DUPLICATE KEY UPDATE
-    average_rank = VALUES(average_rank),
-    committee_votes = VALUES(committee_votes),
-    max_rank = VALUES(max_rank),
-    min_rank = VALUES(min_rank),
-    last_updated = CURRENT_TIMESTAMP;
+GROUP BY ranked_user_pubkey;
 ```
+
+**Why no table?**: 
+- Averages are fast to compute (single query)
+- Keeps schema simple
+- No sync issues between individual and averaged rankings
+- Currently only 1 committee member, but designed for multiple
 
 ### Name Reputations (computed aggregations)
 ```sql
@@ -709,6 +705,7 @@ docker exec -it nymrank_postgres psql -U nymrank_user -d nymrank
 - **Name Affinity**: 1-4 points based on name fields (name=2, nip05=1, lud16=1)
 - **Rank Threshold**: Filter events by minimum rank (≥35, not bots)
 - **Reputation Grants**: Follow mechanism for now, explicit flagging later
+- **Staleness**: Currently uses profile timestamp age for staleness penalty. Future enhancement: track last_event_timestamp for true activity detection by periodically querying for users' most recent events
 
 ## Project Structure
 ```

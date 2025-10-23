@@ -207,18 +207,29 @@ class Database {
   }
 
   async insertUserName(data) {
+    // Calculate name affinity: name=2, nip05=1, lud16=1 (max 4 points)
+    let nameAffinity = 0;
+    if (data.name) nameAffinity += 2;
+    if (data.nip05) nameAffinity += 1;
+    if (data.lud16) nameAffinity += 1;
+    
+    // Determine primary name (prefer name field, fallback to nip05, then lud16)
+    const primaryName = data.name || data.nip05 || data.lud16 || null;
+    
     const query = `
-      INSERT INTO user_names (pubkey, name, nip05, lud16, profile_timestamp)
-      VALUES ($1, $2, $3, $4, $5)
+      INSERT INTO user_names (pubkey, name, nip05, lud16, name_affinity, primary_name, profile_timestamp)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
       ON CONFLICT (pubkey) DO UPDATE SET
         name = EXCLUDED.name,
         nip05 = EXCLUDED.nip05,
         lud16 = EXCLUDED.lud16,
+        name_affinity = EXCLUDED.name_affinity,
+        primary_name = EXCLUDED.primary_name,
         profile_timestamp = EXCLUDED.profile_timestamp,
         last_updated = CURRENT_TIMESTAMP
       WHERE EXCLUDED.profile_timestamp > user_names.profile_timestamp
     `;
-    const params = [data.pubkey, data.name, data.nip05, data.lud16, data.profile_timestamp];
+    const params = [data.pubkey, data.name, data.nip05, data.lud16, nameAffinity, primaryName, data.profile_timestamp];
     await this.query(query, params);
   }
 
@@ -238,48 +249,55 @@ class Database {
       
       // Check both user_names (have profile) and profile_refresh_queue (recently queried)
       // Don't requery if:
-      // 1. We have their profile already, OR
-      // 2. We queried recently (within last 24 hours) even if they had no profile
+      // 1. We have their profile AND activity tracked, AND
+      // 2. We queried recently (within last 24 hours)
       const query = `
         SELECT DISTINCT pubkey FROM (
-          SELECT pubkey FROM user_names WHERE pubkey IN (${placeholders1})
-          UNION
-          SELECT pubkey FROM profile_refresh_queue 
-          WHERE pubkey IN (${placeholders2})
-            AND last_query_attempt > NOW() - INTERVAL '24 hours'
+          SELECT un.pubkey FROM user_names un
+          INNER JOIN profile_refresh_queue prq ON un.pubkey = prq.pubkey
+          WHERE un.pubkey IN (${placeholders1})
+            AND prq.last_activity_timestamp IS NOT NULL
+            AND prq.last_query_attempt > NOW() - INTERVAL '24 hours'
         ) AS existing_pubkeys
       `;
-      const result = await this.query(query, [...chunk, ...chunk]);
+      const result = await this.query(query, chunk);
       result.rows.forEach(row => existingPubkeys.add(row.pubkey));
     }
     
     return pubkeys.filter(p => !existingPubkeys.has(p));
   }
   
-  async recordProfileQueryAttempt(pubkeys, profileTimestamps) {
+  async recordProfileQueryAttempt(pubkeys, profileTimestamps, activityTimestamps = new Map()) {
     if (pubkeys.length === 0) return;
     
-    // Record that we attempted to fetch these profiles
-    // profileTimestamps is a Map of pubkey -> timestamp (or null if not found)
-    const values = pubkeys.map((pubkey, i) => {
-      const timestamp = profileTimestamps.get(pubkey) || 0;
-      return `($${i * 3 + 1}, $${i * 3 + 2}, NOW())`;
-    }).join(',');
+    // Chunk to avoid parameter limit
+    const CHUNK_SIZE = 1000;
+    const now = new Date();
     
-    const params = pubkeys.flatMap(pubkey => {
-      const timestamp = profileTimestamps.get(pubkey) || 0;
-      return [pubkey, timestamp];
-    });
-    
-    const query = `
-      INSERT INTO profile_refresh_queue (pubkey, profile_timestamp, last_query_attempt)
-      VALUES ${values}
-      ON CONFLICT (pubkey) DO UPDATE SET
-        profile_timestamp = GREATEST(profile_refresh_queue.profile_timestamp, EXCLUDED.profile_timestamp),
-        last_query_attempt = EXCLUDED.last_query_attempt
-    `;
-    
-    await this.query(query, params);
+    for (let i = 0; i < pubkeys.length; i += CHUNK_SIZE) {
+      const chunk = pubkeys.slice(i, i + CHUNK_SIZE);
+      
+      const values = chunk.map((pubkey, idx) => {
+        return `($${idx * 4 + 1}, $${idx * 4 + 2}, $${idx * 4 + 3}, $${idx * 4 + 4})`;
+      }).join(',');
+      
+      const params = chunk.flatMap(pubkey => {
+        const profileTs = profileTimestamps.get(pubkey) || 0;
+        const activityTs = activityTimestamps.get(pubkey) || null;
+        return [pubkey, profileTs, activityTs, now];
+      });
+      
+      const query = `
+        INSERT INTO profile_refresh_queue (pubkey, profile_timestamp, last_activity_timestamp, last_query_attempt)
+        VALUES ${values}
+        ON CONFLICT (pubkey) DO UPDATE SET
+          profile_timestamp = GREATEST(profile_refresh_queue.profile_timestamp, EXCLUDED.profile_timestamp),
+          last_activity_timestamp = GREATEST(profile_refresh_queue.last_activity_timestamp, EXCLUDED.last_activity_timestamp),
+          last_query_attempt = EXCLUDED.last_query_attempt
+      `;
+      
+      await this.query(query, params);
+    }
   }
 
   async getServicePubkeys() {

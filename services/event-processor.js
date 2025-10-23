@@ -84,10 +84,36 @@ class EventProcessor {
         return;
       }
 
-      const profile = JSON.parse(event.content);
-      const name = profile.name ? String(profile.name).substring(0, 255) : null;
-      let nip05 = (profile.nip05 && typeof profile.nip05 === 'string') ? profile.nip05.split('@')[0].substring(0, 255) : null;
-      let lud16 = (profile.lud16 && typeof profile.lud16 === 'string') ? profile.lud16.split('@')[0].substring(0, 255) : null;
+      let profile;
+      try {
+        profile = JSON.parse(event.content);
+      } catch (parseError) {
+        this.log.debug(`Skipping profile event ${event.id} - invalid JSON`);
+        return;
+      }
+
+      if (!profile || typeof profile !== 'object') {
+        this.log.debug(`Skipping profile event ${event.id} - content is not an object`);
+        return;
+      }
+
+      // Sanitize strings: remove null bytes and control characters
+      const sanitize = (str) => {
+        if (!str || typeof str !== 'string') return null;
+        return str.replace(/\x00/g, '').replace(/[\x01-\x08\x0B-\x1F\x7F]/g, '').substring(0, 255) || null;
+      };
+
+      const name = profile.name ? sanitize(String(profile.name)) : null;
+      let nip05 = null;
+      let lud16 = null;
+      
+      if (profile.nip05 && typeof profile.nip05 === 'string' && profile.nip05.includes('@')) {
+        nip05 = sanitize(profile.nip05.split('@')[0]);
+      }
+      
+      if (profile.lud16 && typeof profile.lud16 === 'string' && profile.lud16.includes('@')) {
+        lud16 = sanitize(profile.lud16.split('@')[0]);
+      }
 
       const data = {
         pubkey: event.pubkey,

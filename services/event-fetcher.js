@@ -14,11 +14,10 @@ class EventFetcher {
 
   // Fetch latest events only (for delegations and profiles)
   async fetchLatestEvents(kind, authors, relayList = this.relayUrls) {
-    const lastTimestamp = await this.getLastEventTimestamp(kind);
+    // For profiles, just fetch the latest (no since filter needed - database layer handles staleness)
     const filter = {
       kinds: [kind],
-      authors: authors,
-      since: lastTimestamp
+      authors: authors
     };
     
     const events = await this.pool.querySync(relayList, filter);
@@ -185,37 +184,6 @@ class EventFetcher {
     return allEvents;
   }
 
-  async getLastEventTimestamp(kind) {
-    try {
-      let query;
-      if (kind === 0) {
-        // user_names uses profile_timestamp (BIGINT unix timestamp)
-        query = 'SELECT MAX(profile_timestamp) as last_timestamp FROM user_names';
-      } else if (kind === 30382) {
-        // user_rankings uses event_timestamp (TIMESTAMP)
-        query = 'SELECT MAX(event_timestamp) as last_timestamp FROM user_rankings';
-      } else if (kind === 10040) {
-        // delegations uses event_timestamp (TIMESTAMP)
-        query = 'SELECT MAX(event_timestamp) as last_timestamp FROM delegations';
-      } else {
-        this.log.warn(`Unknown kind ${kind} for getLastEventTimestamp`);
-        return 0;
-      }
-      
-      const result = await this.database.query(query);
-      
-      // For kind 0, profile_timestamp is already a unix timestamp (BIGINT)
-      // For other kinds, event_timestamp is a TIMESTAMP that needs conversion
-      const timestamp = result.rows[0]?.last_timestamp ? 
-        (kind === 0 ? result.rows[0].last_timestamp : Math.floor(new Date(result.rows[0].last_timestamp).getTime() / 1000)) : 0;
-        
-      this.log.info({kind, timestamp}, 'Last event timestamp');
-      return timestamp;
-    } catch (error) {
-      this.log.warn('Could not get last event timestamp from database:', error.message);
-      return 0;
-    }
-  }
 
   close() {
     this.pool.close(this.relayUrls);

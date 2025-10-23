@@ -63,6 +63,12 @@ server.addHook('onClose', (instance, done) => {
   }).catch(done);
 });
 
+// --- Decorate server with database ---
+server.decorate('database', database);
+
+// --- Register routes ---
+server.register(require('./routes/web'));
+
 // --- Routes ---
 server.get('/stats', async (request, reply) => {
   try {
@@ -108,7 +114,8 @@ server.get('/log', async (request, reply) => {
 // --- Start and Shutdown ---
 const start = async () => {
   try {
-    await server.listen({ port: 3000 })
+    const port = process.env.PORT || 3000;
+    await server.listen({ port })
   } catch (err) {
     server.log.error(err)
     process.exit(1)
