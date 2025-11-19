@@ -19,11 +19,12 @@ module.exports = async function (fastify, opts) {
           un.name,
           un.nip05,
           un.lud16,
-          ur.rank_value,
-          ur.influence_score,
-          ur.hops,
-          ur.follower_count,
+          AVG(ur.rank_value)::INTEGER as rank_value,
+          AVG(ur.influence_score) as influence_score,
+          AVG(ur.hops)::INTEGER as hops,
+          AVG(ur.follower_count)::INTEGER as follower_count,
           un.name_affinity,
+          COALESCE(MAX(prq.last_activity_timestamp), MAX(un.profile_timestamp)) as last_seen,
           (
             CASE 
               WHEN LOWER(un.name) = LOWER($1) THEN 2
@@ -40,24 +41,38 @@ module.exports = async function (fastify, opts) {
           ) as match_affinity,
           EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(COALESCE(prq.last_activity_timestamp, un.profile_timestamp)))) / 86400 as inactivity_days,
           (
-            ur.influence_score * 
+            AVG(ur.influence_score) * 
             CASE 
               WHEN EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(COALESCE(prq.last_activity_timestamp, un.profile_timestamp)))) / 86400 < 180 THEN 1.0
               WHEN EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(COALESCE(prq.last_activity_timestamp, un.profile_timestamp)))) / 86400 < 365 THEN 0.9
               WHEN EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(COALESCE(prq.last_activity_timestamp, un.profile_timestamp)))) / 86400 < 730 THEN 0.7
               ELSE 0.5
             END
-          ) as adjusted_score
+          ) * (
+            CASE 
+              WHEN LOWER(un.name) = LOWER($1) THEN 2
+              ELSE 0
+            END +
+            CASE 
+              WHEN LOWER(un.nip05) = LOWER($1) THEN 1
+              ELSE 0
+            END +
+            CASE 
+              WHEN LOWER(un.lud16) = LOWER($1) THEN 1
+              ELSE 0
+            END
+          ) as blended_score
         FROM user_rankings ur
         LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey
         LEFT JOIN profile_refresh_queue prq ON ur.ranked_user_pubkey = prq.pubkey
-        WHERE (LOWER(un.name) = LOWER($1) OR LOWER(un.nip05) = LOWER($1) OR LOWER(un.lud16) = LOWER($1))
-          AND un.name_affinity >= 2
-          AND ur.rank_value >= 35
+        WHERE (
+          (LOWER(un.name) = LOWER($1) AND un.name IS NOT NULL) OR
+          (LOWER(un.nip05) = LOWER($1) AND LOWER(un.lud16) = LOWER($1) AND un.nip05 IS NOT NULL AND un.lud16 IS NOT NULL)
+        )
+        AND ur.rank_value >= 35
+        GROUP BY ur.ranked_user_pubkey, un.pubkey, un.name, un.nip05, un.lud16, un.name_affinity, prq.last_activity_timestamp, un.profile_timestamp
         ORDER BY 
-          CASE WHEN LOWER(un.name) = LOWER($1) THEN 1 ELSE 2 END,
-          adjusted_score DESC NULLS LAST,
-          match_affinity DESC
+          blended_score DESC NULLS LAST
         LIMIT $2 OFFSET $3
       `;
       params = [search, limit, offset];
@@ -68,13 +83,16 @@ module.exports = async function (fastify, opts) {
           un.name,
           un.nip05,
           un.lud16,
-          ur.rank_value,
-          ur.influence_score,
-          ur.hops,
-          ur.follower_count
+          AVG(ur.rank_value)::INTEGER as rank_value,
+          AVG(ur.influence_score) as influence_score,
+          AVG(ur.hops)::INTEGER as hops,
+          AVG(ur.follower_count)::INTEGER as follower_count,
+          COALESCE(MAX(prq.last_activity_timestamp), MAX(un.profile_timestamp)) as last_seen
         FROM user_rankings ur
         LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey
-        ORDER BY ur.influence_score DESC NULLS LAST
+        LEFT JOIN profile_refresh_queue prq ON ur.ranked_user_pubkey = prq.pubkey
+        GROUP BY ur.ranked_user_pubkey, un.pubkey, un.name, un.nip05, un.lud16
+        ORDER BY AVG(ur.influence_score) DESC NULLS LAST
         LIMIT $1 OFFSET $2
       `;
       params = [limit, offset];
@@ -83,8 +101,11 @@ module.exports = async function (fastify, opts) {
     const result = await database.query(query, params);
     
     const countQuery = search 
-      ? `SELECT COUNT(*) FROM user_rankings ur LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey WHERE (LOWER(un.name) = LOWER($1) OR LOWER(un.nip05) = LOWER($1) OR LOWER(un.lud16) = LOWER($1)) AND un.name_affinity >= 2 AND ur.rank_value >= 35`
-      : `SELECT COUNT(*) FROM user_rankings`;
+      ? `SELECT COUNT(DISTINCT ur.ranked_user_pubkey) FROM user_rankings ur LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey WHERE (
+          (LOWER(un.name) = LOWER($1) AND un.name IS NOT NULL) OR
+          (LOWER(un.nip05) = LOWER($1) AND LOWER(un.lud16) = LOWER($1) AND un.nip05 IS NOT NULL AND un.lud16 IS NOT NULL)
+        ) AND ur.rank_value >= 35`
+      : `SELECT COUNT(DISTINCT ranked_user_pubkey) FROM user_rankings`;
     const countParams = search ? [search] : [];
     const countResult = await database.query(countQuery, countParams);
     const total = parseInt(countResult.rows[0].count);
@@ -176,6 +197,7 @@ module.exports = async function (fastify, opts) {
           <th>Reputation</th>
           <th>Hops</th>
           <th>Followers</th>
+          <th>Last Seen</th>
         </tr>
       </thead>
       <tbody>
@@ -183,6 +205,15 @@ module.exports = async function (fastify, opts) {
           const influence = row.influence_score ? parseFloat(row.influence_score) : 0;
           const rankClass = influence >= 0.9 ? 'high' : influence >= 0.7 ? 'med' : 'low';
           const influenceDisplay = influence ? influence.toFixed(6) : 'N/A';
+          
+          let lastSeenDisplay = 'N/A';
+          if (row.last_seen) {
+            const lastSeenDate = new Date(row.last_seen * 1000);
+            const now = new Date();
+            const daysAgo = Math.floor((now - lastSeenDate) / (1000 * 60 * 60 * 24));
+            lastSeenDisplay = daysAgo === 0 ? 'Today' : daysAgo === 1 ? 'Yesterday' : daysAgo < 30 ? daysAgo + 'd ago' : Math.floor(daysAgo / 30) + 'mo ago';
+          }
+          
           return `
             <tr>
               <td>${row.name ? row.name : '<span class="no-profile">No profile</span>'}</td>
@@ -192,6 +223,7 @@ module.exports = async function (fastify, opts) {
               <td><span class="rank ${rankClass}">${influenceDisplay}</span></td>
               <td>${row.hops || 0}</td>
               <td>${row.follower_count ? row.follower_count.toLocaleString() : 0}</td>
+              <td style="font-size: 12px; color: #888;">${lastSeenDisplay}</td>
             </tr>
           `;
         }).join('')}

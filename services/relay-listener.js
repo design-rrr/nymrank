@@ -24,10 +24,14 @@ class RelayListener {
 
   async initializeSubscriptions() {
     try {
-      // Skip attestation backfill - assume JSONL import has been run
-      this.log.info('Skipping attestation backfill (use JSONL import for initial sync)');
+      // Note: Both delegations (kind 10040) and attestations (kind 30382) require 
+      // full historical backfill via negentropy. Run externally:
+      //   strfry sync wss://nip85.brainstorm.world --filter '{"kinds":[10040,30382],"authors":[...]}' --dir down
+      //   strfry export > events.jsonl
+      //   node import-events.js < events.jsonl
+      this.log.info('Delegations and attestations backfill requires external negentropy sync');
       
-      // Get all ranked users from the database
+      // Get all ranked users from the database (populated during backfill)
       const rankedUsers = await this.database.query('SELECT DISTINCT ranked_user_pubkey FROM user_rankings');
       const rankedPubkeys = rankedUsers.rows.map(r => r.ranked_user_pubkey);
       
@@ -36,7 +40,7 @@ class RelayListener {
       if (rankedPubkeys.length > 0) {
         await this.subscribeToProfiles(rankedPubkeys);
       } else {
-        this.log.warn('No ranked users found - run JSONL import first');
+        this.log.warn('No ranked users found - run backfill first');
       }
 
     } catch (error) {

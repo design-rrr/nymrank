@@ -34,6 +34,21 @@ class RankingHandler {
     return rankedPubkeys;
   }
 
+  async fetchLatestAttestations(committeePubkeys) {
+    if (committeePubkeys.length === 0) {
+      this.log.info('No committee members found, skipping attestation fetch.');
+      return [];
+    }
+
+    this.log.info(`Fetching latest attestation events from ${committeePubkeys.length} committee members...`);
+    const attestationEvents = await this.eventFetcher.fetchLatestEvents(KIND_RANKING, committeePubkeys);
+    this.log.info(`Found ${attestationEvents.length} attestation events.`);
+    
+    await this.eventProcessor.processEvents(attestationEvents, KIND_RANKING);
+    
+    return attestationEvents;
+  }
+
   close() {
     this.eventFetcher.close();
   }

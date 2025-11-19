@@ -25,6 +25,10 @@ class DelegationHandler {
     return delegationEvents;
   }
 
+  async fetchLatestDelegations(committeePubkeys) {
+    return this.fetchAndProcessDelegations(committeePubkeys);
+  }
+
   close() {
     this.eventFetcher.close();
   }

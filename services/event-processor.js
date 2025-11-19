@@ -25,11 +25,9 @@ class EventProcessor {
     const servicePubkey = event.pubkey;
     const delegatorPubkey = await this.database.getDelegatorForService(servicePubkey);
 
-    if (!delegatorPubkey) {
-      this.log.warn(`[HandleRanking] No delegator found for service pubkey ${servicePubkey}. Proceeding without committee member assignment for event ${event.id}.`);
-    }
-
-    this.log.debug(`[HandleRanking] Found delegator ${delegatorPubkey} for service ${servicePubkey}.`);
+    // If no delegator found, use service pubkey as fallback
+    const committeeMemberPubkey = delegatorPubkey || servicePubkey;
+    this.log.debug(`[HandleRanking] Using committee member ${committeeMemberPubkey} for service ${servicePubkey}.`);
 
     const data = this.parseRankingEvent(event);
     if (!data) {
@@ -37,10 +35,8 @@ class EventProcessor {
       return;
     }
 
-    // Assign the looked-up committee member pubkey if available
-    if (delegatorPubkey) {
-      data.committee_member_pubkey = delegatorPubkey;
-    }
+    // Assign the committee member pubkey
+    data.committee_member_pubkey = committeeMemberPubkey;
     
     this.log.debug({data: data}, `[HandleRanking] Parsed data for event ${event.id}`);
 
