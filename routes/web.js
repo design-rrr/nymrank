@@ -9,10 +9,45 @@ module.exports = async function (fastify, opts) {
     const limit = 50;
     const offset = (page - 1) * limit;
     const search = request.query.search || '';
+    const perspective = request.query.perspective || '';
+    
+    // Get committee members for the dropdown
+    const committeeResult = await database.query('SELECT name, pubkey FROM committee_members WHERE is_active = true ORDER BY name');
+    const committeeMembers = committeeResult.rows;
     
     let query, params;
+    let whereClause = '';
+    let paramIndex = 1;
+    let queryParams = [];
+    
+    // Base WHERE clause
+    if (search) {
+      whereClause += `
+        WHERE (
+          (LOWER(un.name) = LOWER($${paramIndex}) AND un.name IS NOT NULL) OR
+          (LOWER(un.nip05) = LOWER($${paramIndex}) AND LOWER(un.lud16) = LOWER($${paramIndex}) AND un.nip05 IS NOT NULL AND un.lud16 IS NOT NULL)
+        )
+      `;
+      queryParams.push(search);
+      paramIndex++;
+    } else {
+       // If no search, we still need a WHERE clause for the next AND if perspective is used
+       whereClause += ' WHERE 1=1 ';
+    }
+    
+    // Perspective filter
+    if (perspective) {
+      whereClause += ` AND ur.committee_member_pubkey = $${paramIndex}`;
+      queryParams.push(perspective);
+      paramIndex++;
+    }
     
     if (search) {
+      // We need to use the search parameter again for the CASE statements
+      // Since we can't reuse numbered parameters easily in all drivers, let's just inject the $1 index for those specific parts
+      // But for safety, let's stick to the params array order.
+      // The search param is at index 0 of queryParams (so $1).
+      
       query = `
         SELECT 
           ur.ranked_user_pubkey,
@@ -41,7 +76,7 @@ module.exports = async function (fastify, opts) {
           ) as match_affinity,
           EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(COALESCE(prq.last_activity_timestamp, un.profile_timestamp)))) / 86400 as inactivity_days,
           (
-            AVG(ur.influence_score) * 
+            (AVG(ur.influence_score) * LOG(GREATEST(AVG(ur.follower_count), 1) + 1)) * 
             CASE 
               WHEN EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(COALESCE(prq.last_activity_timestamp, un.profile_timestamp)))) / 86400 < 180 THEN 1.0
               WHEN EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(COALESCE(prq.last_activity_timestamp, un.profile_timestamp)))) / 86400 < 365 THEN 0.9
@@ -65,17 +100,14 @@ module.exports = async function (fastify, opts) {
         FROM user_rankings ur
         LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey
         LEFT JOIN profile_refresh_queue prq ON ur.ranked_user_pubkey = prq.pubkey
-        WHERE (
-          (LOWER(un.name) = LOWER($1) AND un.name IS NOT NULL) OR
-          (LOWER(un.nip05) = LOWER($1) AND LOWER(un.lud16) = LOWER($1) AND un.nip05 IS NOT NULL AND un.lud16 IS NOT NULL)
-        )
+        ${whereClause}
         AND ur.rank_value >= 35
         GROUP BY ur.ranked_user_pubkey, un.pubkey, un.name, un.nip05, un.lud16, un.name_affinity, prq.last_activity_timestamp, un.profile_timestamp
         ORDER BY 
           blended_score DESC NULLS LAST
-        LIMIT $2 OFFSET $3
+        LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
       `;
-      params = [search, limit, offset];
+      params = [...queryParams, limit, offset];
     } else {
       query = `
         SELECT 
@@ -87,27 +119,27 @@ module.exports = async function (fastify, opts) {
           AVG(ur.influence_score) as influence_score,
           AVG(ur.hops)::INTEGER as hops,
           AVG(ur.follower_count)::INTEGER as follower_count,
-          COALESCE(MAX(prq.last_activity_timestamp), MAX(un.profile_timestamp)) as last_seen
+          COALESCE(MAX(prq.last_activity_timestamp), MAX(un.profile_timestamp)) as last_seen,
+          (AVG(ur.influence_score) * LOG(GREATEST(AVG(ur.follower_count), 1) + 1)) as effective_score
         FROM user_rankings ur
         LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey
         LEFT JOIN profile_refresh_queue prq ON ur.ranked_user_pubkey = prq.pubkey
+        ${whereClause}
         GROUP BY ur.ranked_user_pubkey, un.pubkey, un.name, un.nip05, un.lud16
-        ORDER BY AVG(ur.influence_score) DESC NULLS LAST
-        LIMIT $1 OFFSET $2
+        ORDER BY effective_score DESC NULLS LAST
+        LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
       `;
-      params = [limit, offset];
+      params = [...queryParams, limit, offset];
     }
     
     const result = await database.query(query, params);
     
     const countQuery = search 
-      ? `SELECT COUNT(DISTINCT ur.ranked_user_pubkey) FROM user_rankings ur LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey WHERE (
-          (LOWER(un.name) = LOWER($1) AND un.name IS NOT NULL) OR
-          (LOWER(un.nip05) = LOWER($1) AND LOWER(un.lud16) = LOWER($1) AND un.nip05 IS NOT NULL AND un.lud16 IS NOT NULL)
-        ) AND ur.rank_value >= 35`
-      : `SELECT COUNT(DISTINCT ranked_user_pubkey) FROM user_rankings`;
-    const countParams = search ? [search] : [];
-    const countResult = await database.query(countQuery, countParams);
+      ? `SELECT COUNT(DISTINCT ur.ranked_user_pubkey) FROM user_rankings ur LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey ${whereClause} AND ur.rank_value >= 35`
+      : `SELECT COUNT(DISTINCT ranked_user_pubkey) FROM user_rankings ur ${whereClause}`;
+      
+    // Re-use queryParams for count query
+    const countResult = await database.query(countQuery, queryParams);
     const total = parseInt(countResult.rows[0].count);
     const totalPages = Math.ceil(total / limit);
     
@@ -116,6 +148,7 @@ module.exports = async function (fastify, opts) {
 <html>
 <head>
   <title>NymRank - Rankings Browser</title>
+  <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -123,16 +156,19 @@ module.exports = async function (fastify, opts) {
     .container { max-width: 1200px; margin: 0 auto; width: 100%; }
     h1 { margin-bottom: 10px; color: #fff; }
     .subtitle { color: #888; margin-bottom: 30px; }
-    .search-box { margin-bottom: 20px; }
-    .search-box input { width: 100%; max-width: 500px; padding: 12px; font-size: 16px; border: 1px solid #333; background: #1a1a1a; color: #fff; border-radius: 8px; }
+    .controls { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+    .search-box { flex-grow: 1; }
+    .search-box input { width: 100%; padding: 12px; font-size: 16px; border: 1px solid #333; background: #1a1a1a; color: #fff; border-radius: 8px; }
     .search-box input:focus { outline: none; border-color: #555; }
+    .perspective-select { min-width: 200px; }
+    .perspective-select select { width: 100%; padding: 12px; font-size: 16px; border: 1px solid #333; background: #1a1a1a; color: #fff; border-radius: 8px; cursor: pointer; }
     .stats { display: flex; gap: 20px; margin-bottom: 30px; flex-wrap: wrap; }
     .stat-card { background: #1a1a1a; padding: 15px 20px; border-radius: 8px; border: 1px solid #333; }
     .stat-card .label { color: #888; font-size: 14px; margin-bottom: 5px; }
     .stat-card .value { color: #fff; font-size: 24px; font-weight: bold; }
-    .table-wrapper { width: 100%; overflow-x: auto; }
-    table { width: 100%; min-width: 800px; border-collapse: collapse; background: #1a1a1a; border-radius: 8px; overflow: hidden; }
-    th, td { padding: 12px 8px; text-align: left; border-bottom: 1px solid #333; white-space: nowrap; }
+    .table-wrapper { width: 100%; overflow-x: visible; overflow-y: visible; }
+    table { width: 100%; min-width: 800px; border-collapse: collapse; background: #1a1a1a; border-radius: 8px; overflow: visible; }
+    th, td { padding: 12px 8px; text-align: left; border-bottom: 1px solid #333; white-space: nowrap; position: relative; }
     th { background: #252525; color: #fff; font-weight: 600; }
     tr:hover { background: #252525; }
     td:nth-child(1), td:nth-child(2), td:nth-child(3) { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -150,12 +186,50 @@ module.exports = async function (fastify, opts) {
     .no-profile { color: #666; font-style: italic; }
     a { color: #4CAF50; text-decoration: none; }
     a:hover { text-decoration: underline; }
+    .small-text { font-size: 11px; color: #888; display: block; margin-top: 2px; }
+    .tooltip { position: relative; display: inline-block; cursor: help; margin-left: 5px; }
+    .tooltip .tooltip-text {
+      visibility: hidden;
+      width: 320px;
+      background-color: #222;
+      color: #eee;
+      text-align: left;
+      border-radius: 6px;
+      padding: 12px;
+      position: absolute;
+      z-index: 9999;
+      bottom: 125%;
+      left: 50%;
+      margin-left: -160px;
+      opacity: 0;
+      transition: opacity 0.3s;
+      font-size: 12px;
+      font-weight: normal;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+      border: 1px solid #444;
+      white-space: normal;
+      line-height: 1.4;
+    }
+    .tooltip .tooltip-text::after {
+      content: "";
+      position: absolute;
+      top: 100%;
+      left: 50%;
+      margin-left: -5px;
+      border-width: 5px;
+      border-style: solid;
+      border-color: #333 transparent transparent transparent;
+    }
+    .tooltip:hover .tooltip-text {
+      visibility: visible;
+      opacity: 1;
+    }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>NymRank Rankings Browser</h1>
-    <div class="subtitle">Reputation scores from committee member attestations</div>
+    <h1>NymRank</h1>
+    <div class="subtitle">Consensus-based namespace, secured by Web-of-Trust</div>
     
     <div class="stats">
       <div class="stat-card">
@@ -168,11 +242,26 @@ module.exports = async function (fastify, opts) {
       </div>
     </div>
     
-    <div class="search-box">
-      <form method="get" action="/">
-        <input type="text" name="search" placeholder="Check slug availability (e.g., 'jack')..." value="${search}">
-      </form>
-    </div>
+    <form method="get" action="/">
+      <div class="controls">
+        <div class="search-box">
+          <input type="text" name="search" placeholder="Check slug availability (e.g., 'jack')..." value="${search}">
+        </div>
+        <div class="perspective-select">
+          <select name="perspective" onchange="this.form.submit()">
+            <option value="">Average</option>
+            ${committeeMembers.map(m => {
+              let label = m.name;
+              if (m.name.toLowerCase() === 'straycat') label += ' (Default)';
+              else if (m.name.toLowerCase() === 'justin') label += ' (Permissive)';
+              else if (m.name.toLowerCase() === 'vinny') label += ' (Restrictive)';
+              return `<option value="${m.pubkey}" ${perspective === m.pubkey ? 'selected' : ''}>${label}</option>`;
+            }).join('')}
+          </select>
+        </div>
+      </div>
+    </form>
+    
     ${search && result.rows.length === 0 ? `
     <div style="padding: 20px; background: #1a1a1a; border-radius: 8px; border: 1px solid #333; margin-bottom: 20px; text-align: center;">
       <div style="color: #4CAF50; font-size: 18px; font-weight: bold; margin-bottom: 10px;">✓ "${search}" is available!</div>
@@ -194,7 +283,17 @@ module.exports = async function (fastify, opts) {
           <th>NIP-05</th>
           <th>LUD-16</th>
           <th>Pubkey</th>
-          <th>Reputation</th>
+          <th>
+            Rank Score
+            <div class="tooltip">ⓘ
+              <span class="tooltip-text">
+                <strong>NymRank Scoring Algorithm</strong><br><br>
+                This score is derived from <strong>GrapeRank</strong> influence scores calculated via the <strong>Web of Trust</strong>.<br><br>
+                • <strong>Weighting:</strong> The raw score is multiplied by the log of verified followers to surface notable accounts.<br>
+                • <strong>Affinity:</strong> During search, exact matches on Name, NIP-05, or LUD-16 receive a significant ranking bonus.
+              </span>
+            </div>
+          </th>
           <th>Hops</th>
           <th>Followers</th>
           <th>Last Seen</th>
@@ -203,8 +302,16 @@ module.exports = async function (fastify, opts) {
       <tbody>
         ${result.rows.map(row => {
           const influence = row.influence_score ? parseFloat(row.influence_score) : 0;
+          
+          // Use effective score if available (from non-search query), otherwise use influence (but we should probably always use effective in display if that's what we sort by)
+          // Actually, let's calculate effective score here for display consistency if it wasn't in the SELECT (though it is now)
+          // Or better: Use the blended/effective score for the main ranking display
+          
+          const effectiveScore = row.effective_score || (row.blended_score ? row.blended_score : (influence * Math.log(Math.max(parseInt(row.follower_count || 0), 1) + 1)));
+          
           const rankClass = influence >= 0.9 ? 'high' : influence >= 0.7 ? 'med' : 'low';
-          const influenceDisplay = influence ? influence.toFixed(6) : 'N/A';
+          const scoreDisplay = effectiveScore ? effectiveScore.toFixed(2) : '0.00';
+          const influenceDisplay = influence ? influence.toFixed(4) : '0.0000';
           
           let lastSeenDisplay = 'N/A';
           if (row.last_seen) {
@@ -220,7 +327,10 @@ module.exports = async function (fastify, opts) {
               <td>${row.nip05 || '-'}</td>
               <td>${row.lud16 || '-'}</td>
               <td><a href="https://primal.net/p/${row.ranked_user_pubkey}" target="_blank" class="pubkey">${row.ranked_user_pubkey}</a></td>
-              <td><span class="rank ${rankClass}">${influenceDisplay}</span></td>
+              <td>
+                <span class="rank ${rankClass}">${scoreDisplay}</span>
+                <span class="small-text">Base: ${influenceDisplay}</span>
+              </td>
               <td>${row.hops || 0}</td>
               <td>${row.follower_count ? row.follower_count.toLocaleString() : 0}</td>
               <td style="font-size: 12px; color: #888;">${lastSeenDisplay}</td>
@@ -232,9 +342,9 @@ module.exports = async function (fastify, opts) {
     </div>
     
     <div class="pagination">
-      ${page > 1 ? `<a href="/?page=${page - 1}${search ? '&search=' + encodeURIComponent(search) : ''}">← Previous</a>` : '<span>← Previous</span>'}
+      ${page > 1 ? `<a href="/?page=${page - 1}${search ? '&search=' + encodeURIComponent(search) : ''}${perspective ? '&perspective=' + encodeURIComponent(perspective) : ''}">← Previous</a>` : '<span>← Previous</span>'}
       <span class="current">Page ${page}</span>
-      ${page < totalPages ? `<a href="/?page=${page + 1}${search ? '&search=' + encodeURIComponent(search) : ''}">Next →</a>` : '<span>Next →</span>'}
+      ${page < totalPages ? `<a href="/?page=${page + 1}${search ? '&search=' + encodeURIComponent(search) : ''}${perspective ? '&perspective=' + encodeURIComponent(perspective) : ''}">Next →</a>` : '<span>Next →</span>'}
     </div>
   </div>
 </body>

@@ -251,12 +251,12 @@ class Database {
       // Don't requery if:
       // 1. We have their profile AND activity tracked, AND
       // 2. We queried recently (within last 24 hours)
+      // OR if we just tried to query them recently (within last 24 hours) even if we failed to get data
       const query = `
         SELECT DISTINCT pubkey FROM (
           SELECT un.pubkey FROM user_names un
           INNER JOIN profile_refresh_queue prq ON un.pubkey = prq.pubkey
           WHERE un.pubkey IN (${placeholders1})
-            AND prq.last_activity_timestamp IS NOT NULL
             AND prq.last_query_attempt > NOW() - INTERVAL '24 hours'
         ) AS existing_pubkeys
       `;
@@ -273,6 +273,8 @@ class Database {
     // Chunk to avoid parameter limit
     const CHUNK_SIZE = 1000;
     const now = new Date();
+    
+    console.log(`[DB] recordProfileQueryAttempt called with ${pubkeys.length} pubkeys, now=${now.toISOString()}`);
     
     for (let i = 0; i < pubkeys.length; i += CHUNK_SIZE) {
       const chunk = pubkeys.slice(i, i + CHUNK_SIZE);
@@ -292,11 +294,15 @@ class Database {
         VALUES ${values}
         ON CONFLICT (pubkey) DO UPDATE SET
           profile_timestamp = GREATEST(profile_refresh_queue.profile_timestamp, EXCLUDED.profile_timestamp),
-          last_activity_timestamp = GREATEST(profile_refresh_queue.last_activity_timestamp, EXCLUDED.last_activity_timestamp),
+          last_activity_timestamp = CASE 
+            WHEN EXCLUDED.last_activity_timestamp IS NOT NULL THEN GREATEST(COALESCE(profile_refresh_queue.last_activity_timestamp, 0), EXCLUDED.last_activity_timestamp)
+            ELSE profile_refresh_queue.last_activity_timestamp
+          END,
           last_query_attempt = EXCLUDED.last_query_attempt
       `;
       
-      await this.query(query, params);
+      const result = await this.query(query, params);
+      console.log(`[DB] Upsert result: ${result.rowCount} rows affected`);
     }
   }
 
