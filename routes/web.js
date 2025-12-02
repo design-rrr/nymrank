@@ -318,8 +318,10 @@ module.exports = async function (fastify, opts) {
       th, td { padding: 8px 6px; }
       th { font-size: 11px; }
       .hide-mobile { display: none !important; }
-      .pubkey { font-size: 10px; }
-      td:nth-child(4) { max-width: 80px; overflow: hidden; text-overflow: ellipsis; }
+      .pubkey { font-size: 10px; max-width: 90px; }
+      .pubkey-desktop { display: none !important; }
+      .pubkey-mobile { display: inline !important; }
+      td:nth-child(4) { max-width: 90px; }
       .rank { padding: 3px 6px; font-size: 11px; }
       .small-text { display: none; }
       .pagination { gap: 5px; margin-top: 15px; }
@@ -337,10 +339,19 @@ module.exports = async function (fastify, opts) {
     th { background: #252525; color: #fff; font-weight: 600; position: relative; }
     tr:hover { background: #252525; }
     td:nth-child(1), td:nth-child(2), td:nth-child(3) { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .pubkey { font-family: monospace; font-size: 12px; color: #888; }
-    td:nth-child(4) { max-width: 200px; }
+    .pubkey {
+      font-family: monospace;
+      font-size: 12px;
+      color: #888;
+      display: inline-block;
+      max-width: 240px;
+      white-space: nowrap;
+    }
+    .pubkey-desktop { display: inline; }
+    .pubkey-mobile { display: none; }
+    td:nth-child(4) { max-width: 240px; vertical-align: top; overflow: hidden; }
     @media (max-width: 1200px) {
-      td:nth-child(4) { max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
+      td:nth-child(4) { max-width: 150px; }
     }
     .score { font-weight: bold; color: #4CAF50; }
     .rank { display: inline-block; padding: 4px 8px; background: #333; border-radius: 4px; font-size: 12px; white-space: nowrap; }
@@ -465,6 +476,13 @@ module.exports = async function (fastify, opts) {
           const rankClass = influence >= 0.9 ? 'high' : influence >= 0.7 ? 'med' : 'low';
           const scoreDisplay = effectiveScore ? effectiveScore.toFixed(2) : '0.00';
           const influenceDisplay = influence ? influence.toFixed(4) : '0.0000';
+          const fullPubkey = row.ranked_user_pubkey || '';
+          const desktopPubkey = fullPubkey.length > 24
+            ? `${fullPubkey.substring(0, 12)}..${fullPubkey.slice(-12)}`
+            : fullPubkey;
+          const mobilePubkey = fullPubkey.length > 10
+            ? `${fullPubkey.substring(0, 4)}..${fullPubkey.slice(-4)}`
+            : fullPubkey;
           
           let lastSeenDisplay = 'N/A';
           if (row.last_seen) {
@@ -485,7 +503,12 @@ module.exports = async function (fastify, opts) {
               <td>${row.name ? row.name : '<span class="no-profile">-</span>'}</td>
               <td>${row.nip05 || '-'}</td>
               <td class="hide-mobile">${row.lud16 || '-'}</td>
-              <td><a href="https://primal.net/p/${row.ranked_user_pubkey}" target="_blank" class="pubkey" title="${row.ranked_user_pubkey}">${row.ranked_user_pubkey}</a></td>
+              <td>
+                <a href="https://primal.net/p/${fullPubkey}" target="_blank" class="pubkey" title="${fullPubkey}">
+                  <span class="pubkey-desktop">${desktopPubkey}</span>
+                  <span class="pubkey-mobile">${mobilePubkey}</span>
+                </a>
+              </td>
               <td>
                 <span class="rank ${rankClass}">${scoreDisplay}</span>
                 <span class="small-text hide-mobile">Base: ${influenceDisplay}</span>

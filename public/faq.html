@@ -17,7 +17,29 @@
     p { margin-bottom: 15px; color: #ccc; }
     ul, ol { margin-left: 30px; margin-bottom: 15px; color: #ccc; }
     li { margin-bottom: 10px; }
-    code { background: #2a2a2a; padding: 2px 6px; border-radius: 4px; font-family: 'Monaco', 'Courier New', monospace; color: #4CAF50; font-size: 14px; }
+    code {
+      background: #2a2a2a;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: 'Monaco', 'Courier New', monospace;
+      color: #4CAF50;
+      font-size: 14px;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    pre {
+      background: #1a1a1a;
+      padding: 12px;
+      border-radius: 6px;
+      border: 1px solid #333;
+      font-family: 'Monaco', 'Courier New', monospace;
+      font-size: 13px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow-x: auto;
+      max-width: 100%;
+    }
     .highlight { background: #1a3a1a; border-left: 4px solid #4CAF50; padding: 15px; margin: 20px 0; border-radius: 4px; }
     .warning { background: #3a2a1a; border-left: 4px solid #FF9800; padding: 15px; margin: 20px 0; border-radius: 4px; }
     .affinity-table { width: 100%; border-collapse: collapse; margin: 20px 0; }
@@ -117,7 +139,7 @@
       </div>
       
       <h3>How NymRank Handles This</h3>
-      <p>To mitigate Amethyst's UX issue, NymRank gives <strong>partial credit</strong> for names that start with your slug:</p>
+      <p>To mitigate this UX ambiguity, NymRank gives <strong>partial credit</strong> for names that start with your slug:</p>
       <ul>
         <li>If your <code>name</code> is "jack smith" and someone searches "jack", you get +1 point (partial match)</li>
         <li>This is half the points of an exact match (+2), but combined with <code>nip05</code> or <code>lud16</code> matches, you can still occupy the name</li>
@@ -176,10 +198,17 @@
       <p>Even if multiple users claim the same name, reputation determines who ranks highest:</p>
       
       <h3>Web of Trust (WoT)</h3>
-      <p>NymRank uses influence scores calculated through the <strong>Web of Trust</strong>. This means:</p>
+      <p>
+        NymRank uses influence scores calculated through the <strong>Web of Trust</strong>. 
+        Our base reputation inputs come from the 
+        <a href="https://primal.net/straycat/graperank" style="color: #4CAF50; font-weight: 600;">GrapeRank</a>
+        project, which computes trust scores from follow/mute/report relationships and publishes them as NIP-85 Trusted Assertions. 
+        NymRank ingests these assertions and layers on
+        name affinity and logarithmic weighting for search and occupation decisions.
+      </p>
       <ul>
-        <li>Users with more <strong>verified followers</strong> have higher reputation</li>
-        <li>Connections to trusted accounts boost your score</li>
+        <li>Users with more <strong>WoT verified</strong> followers have higher reputation weight</li>
+        <li>Connections to non-bot accounts boost your score</li>
         <li>Future enhancements may consider account activity and staleness in reputation calculations</li>
       </ul>
       
@@ -203,10 +232,10 @@
       <p>Name occupation enables powerful features for Nostr applications:</p>
       
       <h3>User Tagging & Mentions</h3>
-      <p>Apps can resolve slugs to pubkeys for mentions and tags. Instead of typing long hex pubkeys, users can simply type <code>@jack</code> and the app resolves it to the correct npub.</p>
+      <p>Apps can resolve slugs to pubkeys for mentions and tags. Instead of typing long hex pubkeys, users can simply type <code>@jack</code> and a NymRank enabled Nostr client will resolve it to the correct npub.</p>
       
       <h3>Human-Readable URLs</h3>
-      <p>Applications can create clean URLs that map to user profiles:</p>
+      <p>NymRank enabled application and services can provide clean URLs that map to user profiles:</p>
       <ul>
         <li><code>https://app.example.com/jack</code> → Resolves to the npub of the user occupying "jack"</li>
         <li><code>https://video.example.com/channel/jack</code> → Direct link to a user's video channel</li>
@@ -217,7 +246,7 @@
       <p>Users can search for people by memorable names instead of cryptographic keys, making Nostr more accessible and user-friendly.</p>
       
       <div class="highlight">
-        <strong>For Developers:</strong> NymRank provides a reputation-weighted namespace that prevents name squatting while enabling human-readable identifiers across the Nostr ecosystem.
+        <strong>For Developers:</strong> NymRank provides a reputation-weighted namespace that prevents name squatting while enabling human-readable identifiers across the Nostr ecosystem. Contact <code>thecto</code> for API access.
       </div>
     </div>
     
@@ -248,11 +277,11 @@
       <h2>Optimization Checklist</h2>
       <ol>
         <li><strong>Set your <code>name</code> field</strong> to a simple slug (no spaces, no emojis) for maximum points</li>
-        <li><strong>Use <code>display_name</code></strong> (NIP-24) for your rich display name with spaces/emojis</li>
+        <li><strong>Only use <code>display_name</code></strong> (NIP-24) for your rich display name with spaces/emojis</li>
         <li><strong>Get a NIP-05 identifier</strong> with your username (e.g., "jack@yourdomain.com")</li>
-        <li><strong>Set your LUD-16</strong> to match your NIP-05 username for bonus points</li>
+        <li><strong>Set a Lightning address (LUD-16)</strong> to match your NIP-05 username for bonus points</li>
         <li><strong>Build verified followers</strong> to increase your Web of Trust reputation score</li>
-        <li><strong>Ensure your reputation meets the minimum threshold</strong> - Search for your desired name to see if you meet the reputation requirements</li>
+        <li><strong>Ensure your reputation meets the minimum threshold</strong> - Search for your desired name to see if you meet the reputation requirements (note: updates are periodically batched and not real-time)</li>
         <li><strong>Check if your desired name is occupied</strong> - if someone more popular already has it, consider a more unique variation</li>
       </ol>
     </div>
@@ -263,10 +292,10 @@
       <ul>
         <li>Use a client that allows editing the <code>name</code> field directly (not just display_name)</li>
         <li>Or publish a kind 0 event manually with your desired fields</li>
-        <li>Your profile is re-checked every 7 days for updates</li>
+        <li>Your profile is re-checked periodically for updates</li>
       </ul>
       
-      <p><strong>Profile refresh frequency:</strong> NymRank checks profiles periodically for updates. Future enhancements may consider account staleness in reputation calculations.</p>
+      <p><strong>Profile refresh frequency:</strong> Future enhancements may consider activity staleness in reputation calculations.</p>
     </div>
     
     <div style="margin-top: 40px; padding: 20px; background: #1a1a1a; border-radius: 8px; border: 1px solid #333; text-align: center;">
