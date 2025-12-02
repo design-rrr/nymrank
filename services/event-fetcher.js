@@ -168,7 +168,7 @@ class EventFetcher {
           }, 'Full page with new events - continuing from oldest timestamp in page.');
         } else {
           // Less than 500 events means we've exhausted this timestamp range, move to older
-          until = oldestTimestamp - 1;
+        until = oldestTimestamp - 1;
         }
       }
       

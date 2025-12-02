@@ -165,18 +165,20 @@ module.exports = async function (fastify, opts) {
       // Default - use precomputed view (fast!)
       query = `
         SELECT 
-          ranked_user_pubkey,
-          name,
-          nip05,
-          lud16,
-          rank_value,
-          influence_score,
-          hops,
-          follower_count,
-          last_seen,
-          effective_score
-        FROM precomputed_rankings
-        ORDER BY effective_score DESC NULLS LAST
+          pr.ranked_user_pubkey,
+          pr.name,
+          pr.nip05,
+          pr.lud16,
+          pr.rank_value,
+          pr.influence_score,
+          pr.hops,
+          pr.follower_count,
+          COALESCE(prq.last_activity_timestamp, un.profile_timestamp) as last_seen,
+          pr.effective_score
+        FROM precomputed_rankings pr
+        LEFT JOIN user_names un ON pr.ranked_user_pubkey = un.pubkey
+        LEFT JOIN profile_refresh_queue prq ON pr.ranked_user_pubkey = prq.pubkey
+        ORDER BY pr.effective_score DESC NULLS LAST
         LIMIT $1 OFFSET $2
       `;
       params = [limit, offset];
@@ -276,6 +278,16 @@ module.exports = async function (fastify, opts) {
   <title>NymRank - Rankings Browser</title>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/png" href="/public/nymrank_sm.png">
+  <meta property="og:title" content="NymRank - Nostr Name Rankings">
+  <meta property="og:description" content="Reputation-weighted namespace for Nostr. Discover who occupies which names and optimize your profile to claim your desired slug.">
+  <meta property="og:image" content="/public/nymrank.png">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="NymRank">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="NymRank - Nostr Name Rankings">
+  <meta name="twitter:description" content="Reputation-weighted namespace for Nostr. Discover who occupies which names and optimize your profile to claim your desired slug.">
+  <meta name="twitter:image" content="/public/nymrank.png">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0a; color: #e0e0e0; padding: 20px; }

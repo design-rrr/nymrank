@@ -118,7 +118,7 @@ async function runBackfill() {
       stdio: ['pipe', 'pipe', 'inherit']
     });
     
-    const rl = readline.createInterface({
+    const rl = readline.createInterface({ 
       input: exportProcess.stdout,
       crlfDelay: Infinity
     });
@@ -135,7 +135,7 @@ async function runBackfill() {
           attestations++;
           if (attestations % 10000 === 0) {
             console.log(`  Processed ${attestations} attestations`);
-          }
+        }
         }
       } catch (err) {
         // Skip parse errors

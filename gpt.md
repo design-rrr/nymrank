@@ -15,18 +15,17 @@ Build a **name reputation system** that warns users when trying to register name
 
 ## Current Implementation Status
 - ✅ Event capture for both kind 10040 and kind 30382 events
-- ✅ Separate log files: `delegation_events.jsonl` and `raw_events.jsonl`
-- ✅ PostgreSQL database connection
+- ✅ PostgreSQL database with full schema
 - ✅ Health endpoint at `/healthz`
 - ✅ Fastify framework with auto-loading routes
 - ✅ Complete database schema design
-- ✅ API endpoint specifications
-- ✅ NymRank Boost project structure
-- ❌ Database schema/tables (needs implementation)
-- ❌ Real-time event processing pipeline
-- ❌ Name reputation APIs
-- ❌ User profile metadata ingestion (kind 0 events)
-- ❌ Committee member management
+- ✅ User profile metadata ingestion (kind 0 events) with 1-day refresh
+- ✅ Activity tracking (any event kind) with 7-day refresh
+- ✅ Web UI with search, browse, pagination, and perspective switching
+- ✅ FAQ page explaining profile optimization
+- ✅ Materialized view for fast queries
+- ✅ Real-time activity check endpoint (`/check-activity`)
+- ✅ Open Graph meta tags for social sharing
 - ❌ Sybil fee payment processing
 - ❌ Referrer onboarding system
 
@@ -50,12 +49,13 @@ Build a **name reputation system** that warns users when trying to register name
 - **<35**: Filtered out (likely bots/inactive) → **Encourage** (suggest paid reputation)
 
 ## Data Sources
-- **Ranking Relay**: `wss://nip85.brainstorm.world` (source of truth for rankings)
-- **Profile Relays**: `wss://relay.damus.io`, `wss://nos.lol`, `wss://relay.snort.social`, `wss://relay.primal.net`, `wss://relay.nostr.band`, `wss://nostrue.com`
-- **Event kinds**: `0` (profiles), `10040` (delegations), `30382` (ranking attestations)
-- **Profile metadata** (kind 0): `name`, `nip05`, `lud16` fields for name resolution
-- **Delegation events** (kind 10040): Who delegates to which service keys
-- **Ranking events** (kind 30382): User rankings with metrics in tags (not content)
+- **Ranking Relay**: `ws://localhost:7777` (local strfry, synced from `wss://nip85.brainstorm.world`)
+- **Profile/Activity Relays**: `wss://relay.damus.io`, `wss://nos.lol`, `wss://relay.snort.social`, `wss://relay.primal.net`, `wss://relay.nostr.band`
+- **Event kinds**: 
+  - `0` (profiles) - fetched daily for name/nip05/lud16 fields
+  - `10040` (delegations) - who delegates to which service keys
+  - `30382` (ranking attestations) - user rankings with metrics in tags
+  - Any kind (activity) - checked every 7 days for "last seen" display
 
 ## Actual Data Structure Observed
 
@@ -333,18 +333,19 @@ CREATE TABLE name_occupations (
     INDEX idx_pubkey (pubkey)
 );
 
--- Profile refresh queue (for stale profile management)
+-- Profile refresh queue (for stale profile and activity management)
 CREATE TABLE profile_refresh_queue (
     pubkey VARCHAR(64) PRIMARY KEY,
     profile_timestamp BIGINT NOT NULL,    -- Timestamp of the kind 0 event we're using
-    last_query_attempt TIMESTAMP,         -- When we last tried to fetch this profile
+    last_activity_timestamp BIGINT,       -- Most recent activity timestamp from any event
+    last_profile_fetch TIMESTAMP,         -- When we last fetched kind-0 profile (1-day cooldown)
+    last_activity_check TIMESTAMP,        -- When we last checked for activity events (7-day cooldown)
     queued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     priority INTEGER DEFAULT 0,
     retry_count INTEGER DEFAULT 0,
     INDEX idx_queued_at (queued_at),
     INDEX idx_priority (priority),
-    INDEX idx_retry_count (retry_count),
-    INDEX idx_last_query_attempt (last_query_attempt)
+    INDEX idx_retry_count (retry_count)
 );
 ```
 
@@ -472,80 +473,52 @@ INSERT INTO reserved_names (name, reason, description, added_by) VALUES
    - Recompute `name_reputations` when averaged rankings change
 6. **Resilience**: Serve cached data when relay is down
 
-## Profile Metadata Fetching Strategy
+## Profile and Activity Fetching Strategy
 
-### Hybrid Approach: Atomic + Batch
+### Two-Stage Approach
 
-**Atomic Profile Fetching** (Primary):
-- **Trigger**: When processing new kind 30382 events for users not in our database
-- **Method**: Query profile relays for kind 0 events
-- **Relays**: `wss://relay.damus.io`, `wss://nos.lol`, `wss://relay.snort.social`, `wss://relay.primal.net`, `wss://relay.nostr.band`, `wss://nostrue.com`
-- **Query**: `{ kinds: [0], authors: [user_pubkey] }`
-- **NIP-05 Verification**: Verify domain ownership before counting nip05 in affinity score
+**Stage 1: Profile Fetching (Kind 0)**
+- **Trigger**: On startup for all ranked users with `last_profile_fetch` older than 1 day
+- **Method**: Batched relay queries (500 pubkeys per batch for replaceable kind-0 events)
+- **Relays**: `wss://relay.damus.io`, `wss://nos.lol`, `wss://relay.snort.social`, `wss://relay.primal.net`, `wss://relay.nostr.band`
+- **Query**: `{ kinds: [0], authors: [batch_pubkeys], limit: 500 }`
+- **Updates**: `profile_timestamp`, `last_profile_fetch` in `profile_refresh_queue`
 
-**Smart Profile Refresh** (Secondary):
-- **Trigger**: Based on profile age and staleness
-- **Method**: Queue-based refresh for stale profiles
-- **Purpose**: Keep profile data current without overwhelming relays
+**Stage 2: Activity Checking (Any Kind)**
+- **Trigger**: After profile fetch, for users with `last_activity_check` NULL or older than 7 days
+- **Method**: Batched relay queries (5 pubkeys per batch to stay within relay limits)
+- **Relays**: Same as profile relays
+- **Query**: `{ authors: [batch_pubkeys], limit: 500 }` (no kinds filter = any kind)
+- **Since Filter**: Uses `last_activity_timestamp` from previous checks to only fetch newer events
+- **Updates**: `last_activity_timestamp`, `last_activity_check` in `profile_refresh_queue`
 
-### Implementation Example:
-```javascript
-// Atomic fetching when processing ranking events
-async function processRankingEvent(event) {
-  const rankedUserPubkey = event.tags.find(tag => tag[0] === 'd')[1];
-  
-  // Check if we have profile data
-  const existingProfile = await getUserProfile(rankedUserPubkey);
-  
-  if (!existingProfile) {
-    // Fetch profile metadata from profile relays
-    const profile = await fetchUserProfileFromRelays(rankedUserPubkey);
-    await updateUserProfile(rankedUserPubkey, profile);
-  } else {
-    // Check if we've queried recently to avoid hitting inactive accounts
-    const lastQuery = await getLastQueryAttempt(rankedUserPubkey);
-    const timeSinceLastQuery = Date.now() - (lastQuery || 0);
-    
-    if (timeSinceLastQuery > QUERY_COOLDOWN_PERIOD) {
-      // Check if profile is stale (based on kind 0 event age)
-      const profileAge = Date.now() - existingProfile.profile_timestamp;
-      if (profileAge > PROFILE_STALE_THRESHOLD) {
-        // Add to refresh queue instead of blocking
-        await addToRefreshQueue(rankedUserPubkey, existingProfile.profile_timestamp);
-      }
-    }
-  }
-  
-  // Update ranking data
-  await updateUserRanking(event);
-}
+### Key Design Decisions
 
-// Smart refresh queue processor
-async function processRefreshQueue() {
-  const staleProfiles = await getStaleProfiles();
-  
-  // Batch fetch with time-scoped queries
-  for (const batch of chunkArray(staleProfiles, 100)) {
-    // Update last_query_attempt before fetching
-    await updateLastQueryAttempt(batch.map(p => p.pubkey));
-    
-    const profiles = await batchFetchProfilesWithTimestamp(batch);
-    await updateUserProfiles(profiles);
-    
-    // Rate limiting between batches
-    await sleep(1000);
-  }
-}
-```
+1. **Separate timestamps for profile vs activity**: 
+   - `last_profile_fetch`: When we last fetched kind-0 (1-day cooldown)
+   - `last_activity_check`: When we last checked for any activity (7-day cooldown)
+   - `last_activity_timestamp`: The actual timestamp of the user's most recent event
+
+2. **Re-batching for users without results**:
+   - Users with activity in a batch get `last_activity_check` updated
+   - Users without activity in a batch do NOT get `last_activity_check` updated (they get re-batched)
+   - Exception: If an entire batch returns 0 events after retry, all users in that batch are marked as checked (legitimately inactive)
+
+3. **Relay error handling**:
+   - Uses `subscribeEose` with `onclose` callback to detect relay errors
+   - Retries with longer timeout (15s → 30s) if 0 events received
+   - Logs relay-specific errors for debugging
+
+4. **Since filter optimization**:
+   - Only uses `since` filter if `last_activity_check` is NOT NULL (we've done a proper check before)
+   - This prevents using stale `last_activity_timestamp` values from before activity checking was implemented
 
 ### Benefits:
-- **Real-time**: New ranked users get profiles immediately
-- **Efficient**: Only fetch when needed, not on every ranking update
-- **Resilient**: Multiple relay sources for profile data
-- **Scalable**: Queue-based refresh prevents overwhelming relays
-- **Time-scoped**: Queries use timestamps to avoid duplicate work
-- **Rate-limited**: Batch processing with delays prevents relay abuse
-- **Inactive Account Protection**: Cooldown periods prevent repeatedly querying inactive accounts
+- **Efficient**: Only fetch when needed, respects cooldown periods
+- **Resilient**: Multiple relay sources, retry logic, error handling
+- **Scalable**: Batched processing with delays prevents relay abuse
+- **Accurate**: Separate tracking for profile freshness vs activity freshness
+- **Incremental**: Uses `since` filter to only fetch new events on subsequent checks
 
 ## Name Reputation API Endpoints
 

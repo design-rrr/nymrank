@@ -121,6 +121,16 @@ class Database {
     `;
     await this.pool.query(ddl);
     
+    // Ensure profile_refresh_queue has new columns
+    await this.pool.query(`
+      ALTER TABLE profile_refresh_queue 
+      ADD COLUMN IF NOT EXISTS last_profile_fetch TIMESTAMP;
+    `);
+    await this.pool.query(`
+      ALTER TABLE profile_refresh_queue 
+      ADD COLUMN IF NOT EXISTS last_activity_check TIMESTAMP;
+    `);
+    
     // Ensure precomputed_rankings materialized view exists
     await this.ensurePrecomputedRankings();
   }
@@ -364,11 +374,11 @@ class Database {
       const chunk = pubkeys.slice(i, i + CHUNK_SIZE);
       const placeholders = chunk.map((_, idx) => `$${idx + 1}`).join(',');
       
-      // Skip if we queried recently (within last 7 days), regardless of whether we found a profile
+      // Skip if we fetched the profile recently (within last 1 day)
       const query = `
         SELECT pubkey FROM profile_refresh_queue
         WHERE pubkey IN (${placeholders})
-          AND last_query_attempt > NOW() - INTERVAL '7 days'
+          AND last_profile_fetch > NOW() - INTERVAL '1 day'
       `;
       const result = await this.query(query, chunk);
       result.rows.forEach(row => existingPubkeys.add(row.pubkey));
@@ -377,42 +387,72 @@ class Database {
     return pubkeys.filter(p => !existingPubkeys.has(p));
   }
   
-  async recordProfileQueryAttempt(pubkeys, profileTimestamps, activityTimestamps = new Map()) {
+  // Record profile fetch (for kind-0 fetches) - sets profile_timestamp and last_profile_fetch
+  async recordProfileTimestamp(pubkeys, profileTimestamps) {
     if (pubkeys.length === 0) return;
     
-    // Chunk to avoid parameter limit
     const CHUNK_SIZE = 1000;
     const now = new Date();
-    
-    console.log(`[DB] recordProfileQueryAttempt called with ${pubkeys.length} pubkeys, now=${now.toISOString()}`);
     
     for (let i = 0; i < pubkeys.length; i += CHUNK_SIZE) {
       const chunk = pubkeys.slice(i, i + CHUNK_SIZE);
       
       const values = chunk.map((pubkey, idx) => {
-        return `($${idx * 4 + 1}, $${idx * 4 + 2}, $${idx * 4 + 3}, $${idx * 4 + 4})`;
+        return `($${idx * 3 + 1}, $${idx * 3 + 2}, $${idx * 3 + 3})`;
       }).join(',');
       
       const params = chunk.flatMap(pubkey => {
         const profileTs = profileTimestamps.get(pubkey) || 0;
-        const activityTs = activityTimestamps.get(pubkey) || null;
-        return [pubkey, profileTs, activityTs, now];
+        return [pubkey, profileTs, now];
       });
       
       const query = `
-        INSERT INTO profile_refresh_queue (pubkey, profile_timestamp, last_activity_timestamp, last_query_attempt)
+        INSERT INTO profile_refresh_queue (pubkey, profile_timestamp, last_profile_fetch)
         VALUES ${values}
         ON CONFLICT (pubkey) DO UPDATE SET
           profile_timestamp = GREATEST(profile_refresh_queue.profile_timestamp, EXCLUDED.profile_timestamp),
-          last_activity_timestamp = CASE 
-            WHEN EXCLUDED.last_activity_timestamp IS NOT NULL THEN GREATEST(COALESCE(profile_refresh_queue.last_activity_timestamp, 0), EXCLUDED.last_activity_timestamp)
-            ELSE profile_refresh_queue.last_activity_timestamp
-          END,
-          last_query_attempt = EXCLUDED.last_query_attempt
+          last_profile_fetch = EXCLUDED.last_profile_fetch
       `;
       
-      const result = await this.query(query, params);
-      console.log(`[DB] Upsert result: ${result.rowCount} rows affected`);
+      await this.query(query, params);
+    }
+  }
+  
+  // Record activity check results - sets last_activity_timestamp and last_activity_check
+  async recordActivityCheck(pubkeys, activityTimestamps) {
+    if (pubkeys.length === 0) return;
+    
+    const CHUNK_SIZE = 500;
+    const now = new Date();
+    
+    for (let i = 0; i < pubkeys.length; i += CHUNK_SIZE) {
+      const chunk = pubkeys.slice(i, i + CHUNK_SIZE);
+      
+      // Split into pubkeys with activity and without
+      const withActivity = chunk.filter(p => activityTimestamps.has(p));
+      const withoutActivity = chunk.filter(p => !activityTimestamps.has(p));
+      
+      // Update pubkeys WITH activity (set both last_activity_timestamp and last_activity_check)
+      if (withActivity.length > 0) {
+        // Use unnest for batch update
+        const activityValues = withActivity.map(p => activityTimestamps.get(p));
+        await this.query(`
+          UPDATE profile_refresh_queue prq
+          SET last_activity_timestamp = GREATEST(COALESCE(prq.last_activity_timestamp, 0), v.activity_ts),
+              last_activity_check = $3
+          FROM (SELECT unnest($1::text[]) as pubkey, unnest($2::bigint[]) as activity_ts) v
+          WHERE prq.pubkey = v.pubkey
+        `, [withActivity, activityValues, now]);
+      }
+      
+      // Update pubkeys WITHOUT activity (just set last_activity_check)
+      if (withoutActivity.length > 0) {
+        await this.query(`
+          UPDATE profile_refresh_queue
+          SET last_activity_check = $2
+          WHERE pubkey = ANY($1::text[])
+        `, [withoutActivity, now]);
+      }
     }
   }
 

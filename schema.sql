@@ -99,7 +99,8 @@ CREATE TABLE profile_refresh_queue (
     pubkey VARCHAR(64) PRIMARY KEY,
     profile_timestamp BIGINT NOT NULL,    -- Timestamp of the kind 0 event we're using
     last_activity_timestamp BIGINT,       -- Most recent activity timestamp from any event
-    last_query_attempt TIMESTAMP,         -- When we last tried to fetch this profile
+    last_profile_fetch TIMESTAMP,         -- When we last fetched kind-0 profile
+    last_activity_check TIMESTAMP,        -- When we last checked for activity events
     queued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     priority INTEGER DEFAULT 0,
     retry_count INTEGER DEFAULT 0
@@ -108,7 +109,8 @@ CREATE TABLE profile_refresh_queue (
 CREATE INDEX idx_queued_at ON profile_refresh_queue(queued_at);
 CREATE INDEX idx_priority ON profile_refresh_queue(priority);
 CREATE INDEX idx_retry_count ON profile_refresh_queue(retry_count);
-CREATE INDEX idx_last_query_attempt ON profile_refresh_queue(last_query_attempt);
+CREATE INDEX idx_last_profile_fetch ON profile_refresh_queue(last_profile_fetch);
+CREATE INDEX idx_last_activity_check ON profile_refresh_queue(last_activity_check);
 
 -- Pre-computed rankings for fast queries
 CREATE MATERIALIZED VIEW precomputed_rankings AS

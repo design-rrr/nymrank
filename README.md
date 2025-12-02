@@ -4,7 +4,7 @@ A Nostr-based reputation and name protection system using committee-based rankin
 
 ## Overview
 
-NymRank leverages WoT reputation scores for users of a given namespace. Instead of relying on a single authority for name issuance, it aggregates rankings from a specific set of members to create a multi-perspective affinity. It also includes a search tool to check if a specific name or handle is occupied by a well-reputed user.
+NymRank leverages Web-of-Trust (WoT) reputation scores for users of a given namespace. Instead of relying on a single authority for name issuance, it aggregates rankings from a specific set of committee members to create a multi-perspective view of name occupancy. It includes a search tool to check if a specific name or handle is occupied by a well-reputed user.
 
 ## Committee Members
 
@@ -68,26 +68,81 @@ npm run dev
 ```
 
 The app will:
-1. Fetch profiles (kind 0) for all ranked users
-2. Track activity (any event authored by ranked users) for staleness calculation
+1. Fetch profiles (kind 0) for all ranked users (daily refresh)
+2. Check activity (any event authored by ranked users) for staleness display (7-day refresh)
 3. Start the web UI on http://localhost:3000
 
 ## Features
 
 - **Multi-perspective Ranking**: Averages reputation scores from all committee members
 - **Name Availability**: Search tool to check if a name/handle is occupied
-- **Activity Tracking**: Displays when users were last active (profile update or any event)
-- **Staleness Penalties**: Adjusts reputation scores based on inactivity
+- **Activity Tracking**: Displays when users were last active ("Recently" for <7 days, "Xd ago" for 7-29 days, "Xmo ago" for 30+ days)
+- **Name Affinity Scoring**: Scores based on name, NIP-05, and LUD-16 fields (partial matches score lower)
+- **FAQ Page**: Explains how to optimize profiles for name occupation
 
 ## Architecture
 
 - **Backfill**: Negentropy sync via strfry for efficient historical data transfer
-- **Profiles**: Batched relay queries for kind 0 events with 24-hour cooldown
+- **Profile Fetching**: Batched relay queries for kind 0 events with 1-day cooldown
+- **Activity Checking**: Batched relay queries for any event kind with 7-day cooldown
 - **Rankings**: Per-committee-member storage in DB, averaged on search/browse
-- **UI**: Fastify web server with search, browse, and pagination
+- **Materialized View**: `precomputed_rankings` for fast default list queries
+- **UI**: Fastify web server with search, browse, pagination, and perspective switching
 
-## Environment
+## Database Schema
+
+### Key Tables
+
+- `user_rankings`: Individual rankings from each committee member
+- `user_names`: Profile metadata (name, nip05, lud16) from kind 0 events
+- `profile_refresh_queue`: Tracks profile and activity fetch timestamps
+  - `profile_timestamp`: Timestamp of the kind 0 event
+  - `last_activity_timestamp`: Most recent activity from any event
+  - `last_profile_fetch`: When we last fetched kind-0 profile
+  - `last_activity_check`: When we last checked for activity events
+
+### Materialized View
+
+`precomputed_rankings` aggregates rankings for the default list view, refreshed automatically on ranking changes.
+
+## API Endpoints
+
+- `GET /` - Main search/browse UI
+- `GET /faq` - FAQ page (served from `/public/faq.html`)
+- `GET /check-activity?pubkey=<hex|npub>` - Check activity for a specific user
+- `GET /healthz` - Health check
+- `GET /logs` - Recent server logs
+
+## Environment Variables
 
 - `PORT`: Server port (default: 3000)
-- `DATABASE_URL`: PostgreSQL connection string (uses env var or defaults to nymrank DB)
+- `DB_HOST`: PostgreSQL host (default: localhost)
+- `DB_PORT`: PostgreSQL port (default: 5432)
+- `DB_NAME`: Database name (default: nymrank)
+- `DB_USER`: Database user (default: nymrank_user)
+- `DB_PASSWORD`: Database password (default: nymrank_password)
+
+## Relay Configuration
+
+### Ranking Relay
+- `ws://localhost:7777` (local strfry for rankings/attestations)
+
+### Profile/Activity Relays
+- `wss://relay.damus.io`
+- `wss://nos.lol`
+- `wss://relay.snort.social`
+- `wss://relay.primal.net`
+- `wss://relay.nostr.band`
+
+## Maintenance
+
+### Reset Activity Checks
+
+To re-run activity checks while preserving existing activity data:
+
+```bash
+docker exec -i nymrank_postgres psql -U nymrank_user -d nymrank < reset-activity-checks.sql
+```
+
+This sets `last_activity_check` to NULL while keeping `last_activity_timestamp` intact.
 
