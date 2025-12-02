@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>NymRank - FAQ: How to Optimize Your Profile</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0a; color: #e0e0e0; padding: 20px; line-height: 1.6; }
+    .container { max-width: 900px; margin: 0 auto; }
+    .back { display: inline-block; margin-bottom: 20px; color: #4CAF50; text-decoration: none; }
+    .back:hover { text-decoration: underline; }
+    h1 { margin-bottom: 10px; color: #fff; font-size: 32px; }
+    h2 { color: #4CAF50; margin-top: 0; margin-bottom: 20px; font-size: 24px; border-bottom: 2px solid #333; padding-bottom: 10px; }
+    h3 { color: #fff; margin-top: 30px; margin-bottom: 15px; font-size: 20px; }
+    .section { background: #1a1a1a; padding: 25px; border-radius: 8px; border: 1px solid #333; margin-bottom: 30px; }
+    p { margin-bottom: 15px; color: #ccc; }
+    ul, ol { margin-left: 30px; margin-bottom: 15px; color: #ccc; }
+    li { margin-bottom: 10px; }
+    code { background: #2a2a2a; padding: 2px 6px; border-radius: 4px; font-family: 'Monaco', 'Courier New', monospace; color: #4CAF50; font-size: 14px; }
+    .highlight { background: #1a3a1a; border-left: 4px solid #4CAF50; padding: 15px; margin: 20px 0; border-radius: 4px; }
+    .warning { background: #3a2a1a; border-left: 4px solid #FF9800; padding: 15px; margin: 20px 0; border-radius: 4px; }
+    .affinity-table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+    .affinity-table th, .affinity-table td { padding: 12px; text-align: left; border-bottom: 1px solid #333; }
+    .affinity-table th { background: #252525; color: #4CAF50; font-weight: 600; }
+    .affinity-table td { color: #ccc; }
+    .affinity-table tr:hover { background: #252525; }
+    .example { background: #1a1a1a; padding: 15px; border-radius: 6px; margin: 15px 0; border: 1px solid #333; }
+    .example-title { color: #4CAF50; font-weight: 600; margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <a href="/" class="back">← Back to Rankings</a>
+    
+    <h1>How to Optimize Your Profile to Occupy a Name</h1>
+    <p style="color: #888; margin-bottom: 30px;">Learn how NymRank determines name occupation and how to maximize your chances of claiming your desired "slug" or nickname.</p>
+    
+    <div class="section">
+      <h2>Understanding Name Occupation</h2>
+      <p>NymRank uses a reputation-based system to determine who "occupies" a name. To be considered an occupant, you need:</p>
+      <ul>
+        <li><strong>Minimum affinity score of 2</strong> (see scoring below)</li>
+        <li><strong>Rank value ≥ 35</strong> (reputation threshold)</li>
+        <li>Higher reputation scores can help you overtake lower-reputation users with the same name</li>
+      </ul>
+      
+      <div class="highlight">
+        <strong>Example:</strong> If both "billionaire jack" and "temu jack" claim the name "jack", the user with higher reputation (more verified followers, better Web-of-Trust score) will rank higher and effectively occupy the name in search results.
+      </div>
+      
+      <p style="margin-top: 20px;"><strong>Before claiming a name:</strong> Always search for it first. If someone with significantly higher reputation already occupies it, consider choosing a more unique variation instead of competing for the same name.</p>
+    </div>
+    
+    <div class="section">
+      <h2>Name Affinity Scoring</h2>
+      <p>Your affinity score determines how strongly you're associated with a name. Higher affinity = better occupation claim.</p>
+      
+      <table class="affinity-table">
+        <thead>
+          <tr>
+            <th>Field</th>
+            <th>Points</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>name</code> (exact match)</td>
+            <td><strong>+2</strong></td>
+            <td>The primary name field in your kind 0 profile</td>
+          </tr>
+          <tr>
+            <td><code>name</code> (starts with)</td>
+            <td><strong>+1</strong></td>
+            <td>If your name starts with the slug (e.g., "jack" matches "jack smith")</td>
+          </tr>
+          <tr>
+            <td><code>nip05</code> (exact match)</td>
+            <td><strong>+1</strong></td>
+            <td>Your verified NIP-05 identifier</td>
+          </tr>
+          <tr>
+            <td><code>lud16</code> (exact match)</td>
+            <td><strong>+1</strong></td>
+            <td>Your Lightning address</td>
+          </tr>
+        </tbody>
+      </table>
+      
+      <p><strong>Minimum to occupy:</strong> You need at least 2 points total. For example:</p>
+      <ul>
+        <li>Exact <code>name</code> match = 2 points ✓ (occupies)</li>
+        <li><code>name</code> starts with + <code>nip05</code> match = 1 + 1 = 2 points ✓ (occupies)</li>
+        <li><code>nip05</code> + <code>lud16</code> both match = 1 + 1 = 2 points ✓ (occupies)</li>
+        <li>Only <code>nip05</code> match = 1 point ✗ (doesn't occupy)</li>
+      </ul>
+    </div>
+    
+    <div class="section">
+      <h2>Name vs Display Name:</h2>
+      
+      <h3>How NIP-24 Defines Display Names</h3>
+      <p>According to <a href="https://nostr-nips.com/nip-24" style="color: #4CAF50;">NIP-24</a>, <code>display_name</code> is a richer, more expressive name field separate from <code>name</code>. The <code>name</code> field should be used for slugs/usernames, while <code>display_name</code> is for display purposes (with spaces, emojis, etc.).</p>
+      
+      <h3>Note for Amethyst users:</h3>
+      <p>Amethyst's Nostr client profile editor for Android uses the <code>name</code> field but <strong>positions it like a display_name</strong> which can encourage users to incorrectly add spaces, emojis, and special characters. This is sub-optimal for name affinity:</p>
+      
+      <ul>
+        <li>Users set <code>name</code> to "Vitor Pamplona 🚀" instead of just "vitor"</li>
+        <li>This results in <strong>partial matches</strong> (+1 point) instead of exact matches (+2 points)</li>
+        <li>Users need to combine with <code>nip05</code> or <code>lud16</code> to reach the 2-point threshold</li>
+      </ul>
+      
+      <div class="warning">
+        <strong>⚠️ Important:</strong> NymRank only reads the <code>name</code> field (not <code>display_name</code>). If you use spaces or emojis in your <code>name</code> field, you'll only get partial match points (+1) instead of full points (+2). For optimal slug occupation, use a simple, single-word name without spaces or emojis.
+      </div>
+      
+      <h3>How NymRank Handles This</h3>
+      <p>To mitigate Amethyst's UX issue, NymRank gives <strong>partial credit</strong> for names that start with your slug:</p>
+      <ul>
+        <li>If your <code>name</code> is "jack smith" and someone searches "jack", you get +1 point (partial match)</li>
+        <li>This is half the points of an exact match (+2), but combined with <code>nip05</code> or <code>lud16</code> matches, you can still occupy the name</li>
+        <li>However, users with exact matches will rank higher if they have similar reputation</li>
+      </ul>
+      
+      <div class="example">
+        <div class="example-title">Example Profile JSON:</div>
+        <pre style="color: #ccc; margin-top: 8px;">{
+  "name": "jack",                    ← Use this for slug occupation (+2 points)
+  "display_name": "Jack 🚀 Smith",  ← Use this for display (NIP-24 standard)
+  "nip05": "jack@example.com",
+  "lud16": "jack@example.com"
+}</pre>
+      </div>
+      
+      <div class="example">
+        <div class="example-title">What Amethyst Users Often Do (Suboptimal):</div>
+        <pre style="color: #ccc; margin-top: 8px;">{
+  "name": "Jack Smith 🚀",          ← Only gets +1 point (partial match)
+  "nip05": "jack@example.com",     ← +1 point
+  "lud16": "jack@example.com"      ← +1 point
+  // Total: 3 points (works, but not optimal)
+}</pre>
+        <p style="margin-top: 8px; color: #888;">Better approach: Set <code>name</code> to "jack" and use <code>display_name</code> for "Jack Smith 🚀"</p>
+      </div>
+    </div>
+    
+    <div class="section">
+      <h2>NIP-05 and LUD-16 Prefixes</h2>
+      
+      <h3>NIP-05 Identifiers</h3>
+      <p>NIP-05 is a verification system that links your Nostr pubkey to an email-like identifier. The format is: <code>username@domain.com</code></p>
+      
+      <p>For name occupation, NymRank checks if the <strong>username part</strong> (before the @) matches the slug:</p>
+      <ul>
+        <li><code>nip05: "jack@example.com"</code> → matches slug "jack" (+1 point)</li>
+        <li><code>nip05: "jacksmith@example.com"</code> → does NOT match slug "jack" (no points)</li>
+      </ul>
+      
+      <h3>LUD-16 Lightning Addresses</h3>
+      <p>LUD-16 is your Lightning payment address. Similar to NIP-05, NymRank checks the username prefix:</p>
+      <ul>
+        <li><code>lud16: "jack@example.com"</code> → matches slug "jack" (+1 point)</li>
+        <li>If both <code>nip05</code> and <code>lud16</code> match the same slug, you get 2 points total (1 + 1)</li>
+      </ul>
+      
+      <div class="highlight">
+        <strong>Pro Tip:</strong> Use the same username in both <code>nip05</code> and <code>lud16</code> to maximize your affinity score. Combined with a partial <code>name</code> match, you can easily reach the 2-point threshold.
+      </div>
+    </div>
+    
+    <div class="section">
+      <h2>How Reputation Helps You Win</h2>
+      
+      <p>Even if multiple users claim the same name, reputation determines who ranks highest:</p>
+      
+      <h3>Web of Trust (WoT)</h3>
+      <p>NymRank uses <strong>GrapeRank</strong> influence scores calculated through the Web of Trust. This means:</p>
+      <ul>
+        <li>Users with more <strong>verified followers</strong> have higher reputation</li>
+        <li>Connections to trusted accounts boost your score</li>
+        <li>Future enhancements may consider account activity and staleness in reputation calculations</li>
+      </ul>
+      
+      <h3>Why "Billionaire Jack" Beats "Temu Jack"</h3>
+      <p>Even if both users have the same name affinity:</p>
+      <ul>
+        <li><strong>Billionaire Jack:</strong> 10,000 verified followers, high WoT score, active → High reputation → Ranks #1</li>
+        <li><strong>Temu Jack:</strong> 50 verified followers, low WoT score → Lower reputation → Ranks lower</li>
+      </ul>
+      
+      <p>The user with higher reputation effectively "occupies" the name because they appear first in search results.</p>
+      
+      <div class="highlight">
+        <strong>Key Takeaway:</strong> Building your reputation through verified followers and trusted connections is just as important as setting your profile fields correctly.
+      </div>
+    </div>
+    
+    <div class="section">
+      <h2>Why This Matters: Use Cases</h2>
+      
+      <p>Name occupation enables powerful features for Nostr applications:</p>
+      
+      <h3>User Tagging & Mentions</h3>
+      <p>Apps can resolve slugs to pubkeys for mentions and tags. Instead of typing long hex pubkeys, users can simply type <code>@jack</code> and the app resolves it to the correct npub.</p>
+      
+      <h3>Human-Readable URLs</h3>
+      <p>Applications can create clean URLs that map to user profiles:</p>
+      <ul>
+        <li><code>https://app.example.com/jack</code> → Resolves to the npub of the user occupying "jack"</li>
+        <li><code>https://video.example.com/channel/jack</code> → Direct link to a user's video channel</li>
+        <li><code>https://shop.example.com/store/jack</code> → Link to a user's e-commerce page</li>
+      </ul>
+      
+      <h3>Name-Based Discovery</h3>
+      <p>Users can search for people by memorable names instead of cryptographic keys, making Nostr more accessible and user-friendly.</p>
+      
+      <div class="highlight">
+        <strong>For Developers:</strong> NymRank provides a reputation-weighted namespace that prevents name squatting while enabling human-readable identifiers across the Nostr ecosystem.
+      </div>
+    </div>
+    
+    <div class="section">
+      <h2>Choosing Your Name Wisely</h2>
+      
+      <p>Before claiming a name, check if it's already occupied by someone with higher reputation:</p>
+      
+      <ol>
+        <li><strong>Search for your desired name</strong> on NymRank</li>
+        <li><strong>Check the reputation scores</strong> of existing occupants</li>
+        <li><strong>If occupied by high-reputation users</strong>, consider a more unique variation:
+          <ul>
+            <li>Add your domain or specialty: "jackdev", "jackmusic", "jacknyc"</li>
+            <li>Use a compound name: "jacksmith", "jackjones"</li>
+            <li>Include numbers or underscores if appropriate: "jack_2024", "jack2"</li>
+          </ul>
+        </li>
+        <li><strong>If the name is available</strong> or occupied by lower-reputation users, you can claim it by building your reputation</li>
+      </ol>
+      
+      <div class="warning">
+        <strong>⚠️ Remember:</strong> Reputation matters. Even if you claim a name first, users with significantly higher reputation can overtake you in rankings. Choose a name where you can realistically compete or establish dominance.
+      </div>
+    </div>
+    
+    <div class="section">
+      <h2>Optimization Checklist</h2>
+      <ol>
+        <li><strong>Set your <code>name</code> field</strong> to a simple slug (no spaces, no emojis) for maximum points</li>
+        <li><strong>Use <code>display_name</code></strong> (NIP-24) for your rich display name with spaces/emojis</li>
+        <li><strong>Get a NIP-05 identifier</strong> with your username (e.g., "jack@yourdomain.com")</li>
+        <li><strong>Set your LUD-16</strong> to match your NIP-05 username for bonus points</li>
+        <li><strong>Build verified followers</strong> to increase your reputation score</li>
+        <li><strong>Aim for rank ≥ 35</strong> to meet the minimum occupation threshold</li>
+        <li><strong>Check if your desired name is occupied</strong> - if someone more popular already has it, consider a more unique variation</li>
+      </ol>
+    </div>
+    
+    <div class="section">
+      <h2>Technical Details</h2>
+      <p>NymRank reads your <strong>kind 0</strong> Nostr profile event. To update your profile:</p>
+      <ul>
+        <li>Use a client that allows editing the <code>name</code> field directly (not just display_name)</li>
+        <li>Or publish a kind 0 event manually with your desired fields</li>
+        <li>Your profile is re-checked every 7 days for updates</li>
+      </ul>
+      
+      <p><strong>Profile refresh frequency:</strong> NymRank checks profiles periodically for updates. Future enhancements may consider account staleness in reputation calculations.</p>
+    </div>
+    
+    <div style="margin-top: 40px; padding: 20px; background: #1a1a1a; border-radius: 8px; border: 1px solid #333; text-align: center;">
+      <p style="color: #888; margin-bottom: 10px;">Ready to claim your name?</p>
+      <a href="/" style="display: inline-block; padding: 12px 24px; background: #4CAF50; color: #000; text-decoration: none; border-radius: 6px; font-weight: 600;">Search for Your Name</a>
+    </div>
+  </div>
+</body>
+</html>
+

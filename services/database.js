@@ -4,6 +4,7 @@ class Database {
   constructor() {
     this.pool = null;
     this.isConnected = false;
+    this.isShuttingDown = false;
   }
 
   async connect() {
@@ -32,21 +33,70 @@ class Database {
       // Ensure auxiliary tables exist
       await this.ensureAttestationEventsTable();
       
+      // Set up listener for rankings refresh notifications
+      await this.setupRankingsRefreshListener();
+      
     } catch (error) {
       console.error('Failed to connect to PostgreSQL:', error);
       throw error;
     }
   }
+  
+  async setupRankingsRefreshListener() {
+    try {
+      const client = await this.pool.connect();
+      await client.query('LISTEN rankings_changed');
+      
+      let refreshPending = false;
+      let refreshTimeout = null;
+      
+      client.on('notification', async (msg) => {
+        if (msg.channel === 'rankings_changed' && !refreshPending) {
+          // Debounce: wait 5 seconds after last change before refreshing
+          refreshPending = true;
+          if (refreshTimeout) clearTimeout(refreshTimeout);
+          refreshTimeout = setTimeout(async () => {
+            try {
+              console.log('[DB] Refreshing precomputed_rankings materialized view...');
+              await this.pool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY precomputed_rankings');
+              console.log('[DB] Materialized view refreshed successfully');
+            } catch (err) {
+              console.error('[DB] Failed to refresh materialized view:', err.message);
+            }
+            refreshPending = false;
+          }, 5000);
+        }
+      });
+      
+      console.log('[DB] Listening for rankings_changed notifications');
+    } catch (error) {
+      console.error('[DB] Failed to setup rankings refresh listener:', error.message);
+    }
+  }
+  
+  async refreshRankings() {
+    try {
+      console.log('[DB] Manually refreshing precomputed_rankings...');
+      await this.pool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY precomputed_rankings');
+      console.log('[DB] Materialized view refreshed');
+    } catch (error) {
+      console.error('[DB] Failed to refresh rankings:', error.message);
+      throw error;
+    }
+  }
 
   async query(text, params) {
-    if (!this.isConnected) {
-      throw new Error('Database not connected');
+    if (!this.isConnected || this.isShuttingDown) {
+      return { rows: [], rowCount: 0 }; // Return empty result during shutdown
     }
     
     try {
       const result = await this.pool.query(text, params);
       return result;
     } catch (error) {
+      if (this.isShuttingDown) {
+        return { rows: [], rowCount: 0 }; // Suppress errors during shutdown
+      }
       console.error('Database query error:', error);
       throw error;
     }
@@ -70,9 +120,77 @@ class Database {
         ON attestation_events (ranked_user_pubkey);
     `;
     await this.pool.query(ddl);
+    
+    // Ensure precomputed_rankings materialized view exists
+    await this.ensurePrecomputedRankings();
+  }
+  
+  async ensurePrecomputedRankings() {
+    // Check if materialized view exists
+    const checkResult = await this.pool.query(`
+      SELECT EXISTS (
+        SELECT FROM pg_matviews WHERE matviewname = 'precomputed_rankings'
+      ) as exists
+    `);
+    
+    if (!checkResult.rows[0].exists) {
+      console.log('[DB] Creating precomputed_rankings materialized view...');
+      
+      await this.pool.query(`
+        CREATE MATERIALIZED VIEW precomputed_rankings AS
+        SELECT 
+          ur.ranked_user_pubkey,
+          un.name,
+          un.nip05,
+          un.lud16,
+          AVG(ur.rank_value)::INTEGER as rank_value,
+          AVG(ur.influence_score) as influence_score,
+          AVG(ur.hops)::INTEGER as hops,
+          AVG(ur.follower_count)::INTEGER as follower_count,
+          COALESCE(MAX(prq.last_activity_timestamp), MAX(un.profile_timestamp)) as last_seen,
+          (AVG(ur.influence_score) * LOG(GREATEST(AVG(ur.follower_count), 1) + 1)) as effective_score
+        FROM user_rankings ur
+        LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey
+        LEFT JOIN profile_refresh_queue prq ON ur.ranked_user_pubkey = prq.pubkey
+        GROUP BY ur.ranked_user_pubkey, un.pubkey, un.name, un.nip05, un.lud16
+      `);
+      
+      await this.pool.query(`CREATE UNIQUE INDEX idx_precomputed_pubkey ON precomputed_rankings(ranked_user_pubkey)`);
+      await this.pool.query(`CREATE INDEX idx_precomputed_effective_score ON precomputed_rankings(effective_score DESC NULLS LAST)`);
+      await this.pool.query(`CREATE INDEX idx_precomputed_name ON precomputed_rankings(name)`);
+      await this.pool.query(`CREATE INDEX idx_precomputed_nip05 ON precomputed_rankings(nip05)`);
+      await this.pool.query(`CREATE INDEX idx_precomputed_lud16 ON precomputed_rankings(lud16)`);
+      
+      console.log('[DB] Materialized view created with indexes');
+    }
+    
+    // Ensure trigger function exists
+    await this.pool.query(`
+      CREATE OR REPLACE FUNCTION trigger_rankings_refresh()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        PERFORM pg_notify('rankings_changed', '');
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql
+    `);
+    
+    // Ensure trigger exists
+    await this.pool.query(`
+      DROP TRIGGER IF EXISTS rankings_changed_trigger ON user_rankings
+    `);
+    await this.pool.query(`
+      CREATE TRIGGER rankings_changed_trigger
+      AFTER INSERT OR UPDATE ON user_rankings
+      FOR EACH STATEMENT
+      EXECUTE FUNCTION trigger_rankings_refresh()
+    `);
+    
+    console.log('[DB] Precomputed rankings view and triggers ready');
   }
 
   async disconnect() {
+    this.isShuttingDown = true;
     if (this.pool) {
       await this.pool.end();
       this.isConnected = false;
@@ -244,21 +362,13 @@ class Database {
     
     for (let i = 0; i < pubkeys.length; i += CHUNK_SIZE) {
       const chunk = pubkeys.slice(i, i + CHUNK_SIZE);
-      const placeholders1 = chunk.map((_, idx) => `$${idx + 1}`).join(',');
-      const placeholders2 = chunk.map((_, idx) => `$${idx + chunk.length + 1}`).join(',');
+      const placeholders = chunk.map((_, idx) => `$${idx + 1}`).join(',');
       
-      // Check both user_names (have profile) and profile_refresh_queue (recently queried)
-      // Don't requery if:
-      // 1. We have their profile AND activity tracked, AND
-      // 2. We queried recently (within last 24 hours)
-      // OR if we just tried to query them recently (within last 24 hours) even if we failed to get data
+      // Skip if we queried recently (within last 7 days), regardless of whether we found a profile
       const query = `
-        SELECT DISTINCT pubkey FROM (
-          SELECT un.pubkey FROM user_names un
-          INNER JOIN profile_refresh_queue prq ON un.pubkey = prq.pubkey
-          WHERE un.pubkey IN (${placeholders1})
-            AND prq.last_query_attempt > NOW() - INTERVAL '24 hours'
-        ) AS existing_pubkeys
+        SELECT pubkey FROM profile_refresh_queue
+        WHERE pubkey IN (${placeholders})
+          AND last_query_attempt > NOW() - INTERVAL '7 days'
       `;
       const result = await this.query(query, chunk);
       result.rows.forEach(row => existingPubkeys.add(row.pubkey));

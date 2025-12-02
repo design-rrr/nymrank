@@ -3,142 +3,268 @@
 module.exports = async function (fastify, opts) {
   const database = fastify.database;
 
-  // Home page - rankings browser
+  // Home page - rankings browser (uses precomputed_rankings materialized view)
   fastify.get('/', async (request, reply) => {
+    reply.header('Cache-Control', 'no-cache');
     const page = parseInt(request.query.page) || 1;
     const limit = 50;
     const offset = (page - 1) * limit;
-    const search = request.query.search || '';
+    const search = (request.query.search || '').trim();
     const perspective = request.query.perspective || '';
     
-    // Get committee members for the dropdown
+    // Get committee members
     const committeeResult = await database.query('SELECT name, pubkey FROM committee_members WHERE is_active = true ORDER BY name');
     const committeeMembers = committeeResult.rows;
     
     let query, params;
-    let whereClause = '';
-    let paramIndex = 1;
     let queryParams = [];
-    
-    // Base WHERE clause
-    if (search) {
-      whereClause += `
-        WHERE (
-          (LOWER(un.name) = LOWER($${paramIndex}) AND un.name IS NOT NULL) OR
-          (LOWER(un.nip05) = LOWER($${paramIndex}) AND LOWER(un.lud16) = LOWER($${paramIndex}) AND un.nip05 IS NOT NULL AND un.lud16 IS NOT NULL)
-        )
-      `;
-      queryParams.push(search);
-      paramIndex++;
-    } else {
-       // If no search, we still need a WHERE clause for the next AND if perspective is used
-       whereClause += ' WHERE 1=1 ';
-    }
-    
-    // Perspective filter
-    if (perspective) {
-      whereClause += ` AND ur.committee_member_pubkey = $${paramIndex}`;
-      queryParams.push(perspective);
-      paramIndex++;
-    }
+    let paramIndex = 1;
     
     if (search) {
-      // We need to use the search parameter again for the CASE statements
-      // Since we can't reuse numbered parameters easily in all drivers, let's just inject the $1 index for those specific parts
-      // But for safety, let's stick to the params array order.
-      // The search param is at index 0 of queryParams (so $1).
-      
+      // Search query - always use user_rankings to support perspective filtering
+      // If no perspective, aggregate across all committee members
+      if (perspective) {
+        // Search with perspective - filter by specific committee member
+        query = `
+          SELECT * FROM (
+            SELECT 
+              ur.ranked_user_pubkey,
+              un.name,
+              un.nip05,
+              un.lud16,
+              ur.rank_value,
+              ur.influence_score,
+              ur.hops::INTEGER as hops,
+              ur.follower_count::INTEGER as follower_count,
+              COALESCE(prq.last_activity_timestamp, un.profile_timestamp) as last_seen,
+              (
+                ur.influence_score * 
+                CASE 
+                  WHEN EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(COALESCE(prq.last_activity_timestamp, un.profile_timestamp)))) < 180 * 86400 THEN 1.0
+                  WHEN EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(COALESCE(prq.last_activity_timestamp, un.profile_timestamp)))) < 365 * 86400 THEN 0.9
+                  WHEN EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(COALESCE(prq.last_activity_timestamp, un.profile_timestamp)))) < 730 * 86400 THEN 0.7
+                  ELSE 0.5
+                END *
+                LOG(GREATEST(ur.follower_count, 1) + 1)
+              ) * (
+                CASE 
+                  WHEN LOWER(un.name) = LOWER($1) THEN 2 
+                  WHEN LOWER(un.name) LIKE LOWER($1) || ' %' THEN 1
+                  ELSE 0 
+                END +
+                CASE WHEN LOWER(un.nip05) = LOWER($1) THEN 1 ELSE 0 END +
+                CASE WHEN LOWER(un.lud16) = LOWER($1) THEN 1 ELSE 0 END
+              ) as blended_score,
+              (
+                CASE 
+                  WHEN LOWER(un.name) = LOWER($1) THEN 2 
+                  WHEN LOWER(un.name) LIKE LOWER($1) || ' %' THEN 1
+                  ELSE 0 
+                END +
+                CASE WHEN LOWER(un.nip05) = LOWER($1) THEN 1 ELSE 0 END +
+                CASE WHEN LOWER(un.lud16) = LOWER($1) THEN 1 ELSE 0 END
+              ) as match_affinity
+            FROM user_rankings ur
+            LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey
+            LEFT JOIN profile_refresh_queue prq ON ur.ranked_user_pubkey = prq.pubkey
+            WHERE ur.committee_member_pubkey = $2
+            AND ur.rank_value >= 35
+            AND (
+              LOWER(un.name) = LOWER($1) OR
+              LOWER(un.name) LIKE LOWER($1) || ' %' OR
+              LOWER(un.nip05) = LOWER($1) OR
+              LOWER(un.lud16) = LOWER($1)
+            )
+          ) ranked
+          WHERE match_affinity >= 2
+          ORDER BY blended_score DESC NULLS LAST
+          LIMIT $3 OFFSET $4
+        `;
+        params = [search, perspective, limit, offset];
+        queryParams = [search, perspective];
+      } else {
+        // Search without perspective - aggregate across all committee members
+        query = `
+          SELECT 
+            ur.ranked_user_pubkey,
+            un.name,
+            un.nip05,
+            un.lud16,
+            ROUND(AVG(ur.rank_value))::INTEGER as rank_value,
+            AVG(ur.influence_score) as influence_score,
+            ROUND(AVG(ur.hops))::INTEGER as hops,
+            ROUND(AVG(ur.follower_count))::INTEGER as follower_count,
+            COALESCE(prq.last_activity_timestamp, un.profile_timestamp) as last_seen,
+            (
+              AVG(ur.influence_score) * 
+              CASE 
+                WHEN EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(COALESCE(prq.last_activity_timestamp, un.profile_timestamp)))) < 180 * 86400 THEN 1.0
+                WHEN EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(COALESCE(prq.last_activity_timestamp, un.profile_timestamp)))) < 365 * 86400 THEN 0.9
+                WHEN EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(COALESCE(prq.last_activity_timestamp, un.profile_timestamp)))) < 730 * 86400 THEN 0.7
+                ELSE 0.5
+              END *
+              LOG(GREATEST(AVG(ur.follower_count), 1) + 1)
+            ) * (
+              CASE 
+                WHEN LOWER(un.name) = LOWER($1) THEN 2 
+                WHEN LOWER(un.name) LIKE LOWER($1) || ' %' THEN 1
+                ELSE 0 
+              END +
+              CASE WHEN LOWER(un.nip05) = LOWER($1) THEN 1 ELSE 0 END +
+              CASE WHEN LOWER(un.lud16) = LOWER($1) THEN 1 ELSE 0 END
+            ) as blended_score
+          FROM user_rankings ur
+          LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey
+          LEFT JOIN profile_refresh_queue prq ON ur.ranked_user_pubkey = prq.pubkey
+          WHERE (
+            (LOWER(un.name) = LOWER($1) AND un.name IS NOT NULL)
+            OR (LOWER(un.name) LIKE LOWER($1) || ' %' AND un.name IS NOT NULL)
+            OR (LOWER(un.nip05) = LOWER($1) AND LOWER(un.lud16) = LOWER($1) AND un.nip05 IS NOT NULL AND un.lud16 IS NOT NULL)
+          )
+          AND ur.rank_value >= 35
+          GROUP BY ur.ranked_user_pubkey, un.name, un.nip05, un.lud16, prq.last_activity_timestamp, un.profile_timestamp
+          HAVING (
+            CASE 
+              WHEN LOWER(un.name) = LOWER($1) THEN 2 
+              WHEN LOWER(un.name) LIKE LOWER($1) || ' %' THEN 1
+              ELSE 0 
+            END +
+            CASE WHEN LOWER(un.nip05) = LOWER($1) THEN 1 ELSE 0 END +
+            CASE WHEN LOWER(un.lud16) = LOWER($1) THEN 1 ELSE 0 END
+          ) >= 2
+          ORDER BY blended_score DESC NULLS LAST
+          LIMIT $2 OFFSET $3
+        `;
+        params = [search, limit, offset];
+        queryParams = [search];
+      }
+    } else if (perspective) {
+      // Perspective filter - need to query user_rankings directly for committee member filter
       query = `
         SELECT 
           ur.ranked_user_pubkey,
           un.name,
           un.nip05,
           un.lud16,
-          AVG(ur.rank_value)::INTEGER as rank_value,
-          AVG(ur.influence_score) as influence_score,
-          AVG(ur.hops)::INTEGER as hops,
-          AVG(ur.follower_count)::INTEGER as follower_count,
-          un.name_affinity,
-          COALESCE(MAX(prq.last_activity_timestamp), MAX(un.profile_timestamp)) as last_seen,
-          (
-            CASE 
-              WHEN LOWER(un.name) = LOWER($1) THEN 2
-              ELSE 0
-            END +
-            CASE 
-              WHEN LOWER(un.nip05) = LOWER($1) THEN 1
-              ELSE 0
-            END +
-            CASE 
-              WHEN LOWER(un.lud16) = LOWER($1) THEN 1
-              ELSE 0
-            END
-          ) as match_affinity,
-          EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(COALESCE(prq.last_activity_timestamp, un.profile_timestamp)))) / 86400 as inactivity_days,
-          (
-            (AVG(ur.influence_score) * LOG(GREATEST(AVG(ur.follower_count), 1) + 1)) * 
-            CASE 
-              WHEN EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(COALESCE(prq.last_activity_timestamp, un.profile_timestamp)))) / 86400 < 180 THEN 1.0
-              WHEN EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(COALESCE(prq.last_activity_timestamp, un.profile_timestamp)))) / 86400 < 365 THEN 0.9
-              WHEN EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(COALESCE(prq.last_activity_timestamp, un.profile_timestamp)))) / 86400 < 730 THEN 0.7
-              ELSE 0.5
-            END
-          ) * (
-            CASE 
-              WHEN LOWER(un.name) = LOWER($1) THEN 2
-              ELSE 0
-            END +
-            CASE 
-              WHEN LOWER(un.nip05) = LOWER($1) THEN 1
-              ELSE 0
-            END +
-            CASE 
-              WHEN LOWER(un.lud16) = LOWER($1) THEN 1
-              ELSE 0
-            END
-          ) as blended_score
+          ur.rank_value,
+          ur.influence_score,
+          ur.hops,
+          ur.follower_count,
+          COALESCE(prq.last_activity_timestamp, un.profile_timestamp) as last_seen,
+          (ur.influence_score * LOG(GREATEST(ur.follower_count, 1) + 1)) as effective_score
         FROM user_rankings ur
         LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey
         LEFT JOIN profile_refresh_queue prq ON ur.ranked_user_pubkey = prq.pubkey
-        ${whereClause}
-        AND ur.rank_value >= 35
-        GROUP BY ur.ranked_user_pubkey, un.pubkey, un.name, un.nip05, un.lud16, un.name_affinity, prq.last_activity_timestamp, un.profile_timestamp
-        ORDER BY 
-          blended_score DESC NULLS LAST
-        LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
-      `;
-      params = [...queryParams, limit, offset];
-    } else {
-      query = `
-        SELECT 
-          ur.ranked_user_pubkey,
-          un.name,
-          un.nip05,
-          un.lud16,
-          AVG(ur.rank_value)::INTEGER as rank_value,
-          AVG(ur.influence_score) as influence_score,
-          AVG(ur.hops)::INTEGER as hops,
-          AVG(ur.follower_count)::INTEGER as follower_count,
-          COALESCE(MAX(prq.last_activity_timestamp), MAX(un.profile_timestamp)) as last_seen,
-          (AVG(ur.influence_score) * LOG(GREATEST(AVG(ur.follower_count), 1) + 1)) as effective_score
-        FROM user_rankings ur
-        LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey
-        LEFT JOIN profile_refresh_queue prq ON ur.ranked_user_pubkey = prq.pubkey
-        ${whereClause}
-        GROUP BY ur.ranked_user_pubkey, un.pubkey, un.name, un.nip05, un.lud16
+        WHERE ur.committee_member_pubkey = $1
         ORDER BY effective_score DESC NULLS LAST
-        LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
+        LIMIT $2 OFFSET $3
       `;
-      params = [...queryParams, limit, offset];
+      params = [perspective, limit, offset];
+      queryParams = [perspective];
+    } else {
+      // Default - use precomputed view (fast!)
+      query = `
+        SELECT 
+          ranked_user_pubkey,
+          name,
+          nip05,
+          lud16,
+          rank_value,
+          influence_score,
+          hops,
+          follower_count,
+          last_seen,
+          effective_score
+        FROM precomputed_rankings
+        ORDER BY effective_score DESC NULLS LAST
+        LIMIT $1 OFFSET $2
+      `;
+      params = [limit, offset];
     }
     
     const result = await database.query(query, params);
     
-    const countQuery = search 
-      ? `SELECT COUNT(DISTINCT ur.ranked_user_pubkey) FROM user_rankings ur LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey ${whereClause} AND ur.rank_value >= 35`
-      : `SELECT COUNT(DISTINCT ranked_user_pubkey) FROM user_rankings ur ${whereClause}`;
-      
-    // Re-use queryParams for count query
+    // Count query - also use precomputed view when possible
+    let countQuery;
+    if (search) {
+      if (perspective) {
+        // Search with perspective - count from user_rankings with affinity filter
+        countQuery = `
+          SELECT COUNT(*) FROM (
+            SELECT 
+              ur.ranked_user_pubkey,
+              (
+                CASE 
+                  WHEN LOWER(un.name) = LOWER($1) THEN 2 
+                  WHEN LOWER(un.name) LIKE LOWER($1) || ' %' THEN 1
+                  ELSE 0 
+                END +
+                CASE WHEN LOWER(un.nip05) = LOWER($1) THEN 1 ELSE 0 END +
+                CASE WHEN LOWER(un.lud16) = LOWER($1) THEN 1 ELSE 0 END
+              ) as match_affinity
+            FROM user_rankings ur
+            LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey
+            WHERE ur.committee_member_pubkey = $2
+            AND ur.rank_value >= 35
+            AND (
+              LOWER(un.name) = LOWER($1) OR
+              LOWER(un.name) LIKE LOWER($1) || ' %' OR
+              LOWER(un.nip05) = LOWER($1) OR
+              LOWER(un.lud16) = LOWER($1)
+            )
+          ) ranked
+          WHERE match_affinity >= 2
+        `;
+      } else {
+        // Search without perspective - aggregate across all committee members with affinity filter
+        countQuery = `
+          SELECT COUNT(DISTINCT ranked_user_pubkey) FROM (
+            SELECT 
+              ur.ranked_user_pubkey,
+              (
+                CASE 
+                  WHEN LOWER(un.name) = LOWER($1) THEN 2 
+                  WHEN LOWER(un.name) LIKE LOWER($1) || ' %' THEN 1
+                  ELSE 0 
+                END +
+                CASE WHEN LOWER(un.nip05) = LOWER($1) THEN 1 ELSE 0 END +
+                CASE WHEN LOWER(un.lud16) = LOWER($1) THEN 1 ELSE 0 END
+              ) as match_affinity
+            FROM user_rankings ur
+            LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey
+            WHERE ur.rank_value >= 35
+            AND (
+              LOWER(un.name) = LOWER($1) OR
+              LOWER(un.name) LIKE LOWER($1) || ' %' OR
+              LOWER(un.nip05) = LOWER($1) OR
+              LOWER(un.lud16) = LOWER($1)
+            )
+          ) ranked
+          WHERE match_affinity >= 2
+        `;
+      }
+    } else if (perspective) {
+      // Count occupied nyms for this perspective: users with rank >= 35 and name_affinity >= 2
+      countQuery = `
+        SELECT COUNT(DISTINCT ur.ranked_user_pubkey)
+        FROM user_rankings ur
+        LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey
+        WHERE ur.committee_member_pubkey = $1
+        AND ur.rank_value >= 35
+        AND COALESCE(un.name_affinity, 0) >= 2
+      `;
+    } else {
+      // Count occupied nyms: users with rank >= 35 and name_affinity >= 2
+      countQuery = `
+        SELECT COUNT(DISTINCT ur.ranked_user_pubkey)
+        FROM user_rankings ur
+        LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey
+        WHERE ur.rank_value >= 35
+        AND COALESCE(un.name_affinity, 0) >= 2
+      `;
+      queryParams = [];
+    }
+    
     const countResult = await database.query(countQuery, queryParams);
     const total = parseInt(countResult.rows[0].count);
     const totalPages = Math.ceil(total / limit);
@@ -152,28 +278,65 @@ module.exports = async function (fastify, opts) {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0a; color: #e0e0e0; padding: 20px; overflow-x: hidden; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0a; color: #e0e0e0; padding: 20px; }
     .container { max-width: 1200px; margin: 0 auto; width: 100%; }
     h1 { margin-bottom: 10px; color: #fff; }
     .subtitle { color: #888; margin-bottom: 30px; }
     .controls { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
-    .search-box { flex-grow: 1; }
-    .search-box input { width: 100%; padding: 12px; font-size: 16px; border: 1px solid #333; background: #1a1a1a; color: #fff; border-radius: 8px; }
+    .search-box { flex-grow: 1; display: flex; gap: 8px; }
+    .search-box input { flex-grow: 1; padding: 12px; font-size: 16px; border: 1px solid #333; background: #1a1a1a; color: #fff; border-radius: 8px; }
     .search-box input:focus { outline: none; border-color: #555; }
+    .search-btn { padding: 12px 20px; font-size: 16px; border: none; background: #4CAF50; color: #000; border-radius: 8px; cursor: pointer; font-weight: 600; white-space: nowrap; }
+    .search-btn:hover { background: #45a049; }
+    .search-btn:active { background: #3d8b40; }
     .perspective-select { min-width: 200px; }
     .perspective-select select { width: 100%; padding: 12px; font-size: 16px; border: 1px solid #333; background: #1a1a1a; color: #fff; border-radius: 8px; cursor: pointer; }
+    @media (max-width: 768px) {
+      body { padding: 12px; }
+      h1 { font-size: 20px; }
+      .subtitle { font-size: 12px; margin-bottom: 12px; }
+      .stats { gap: 8px; margin-bottom: 20px; }
+      .stat-card { flex: 1; min-width: 80px; padding: 8px 10px; }
+      .stat-card .value { font-size: 16px; }
+      .stat-card .label { font-size: 11px; }
+      .controls { flex-direction: column; gap: 8px; }
+      .search-box { width: 100%; }
+      .search-box input { padding: 10px; font-size: 16px; min-width: 0; }
+      .search-btn { padding: 10px 16px; }
+      .perspective-select { width: 100%; min-width: unset; }
+      .perspective-select select { padding: 10px; }
+      .table-wrapper { 
+        width: 100%;
+        overflow-x: auto; 
+        -webkit-overflow-scrolling: touch;
+      }
+      table { 
+        width: 100%;
+        min-width: 500px;
+        font-size: 12px; 
+      }
+      th, td { padding: 8px 6px; }
+      th { font-size: 11px; }
+      .hide-mobile { display: none !important; }
+      .pubkey { font-size: 10px; }
+      .rank { padding: 3px 6px; font-size: 11px; }
+      .small-text { display: none; }
+      .pagination { gap: 5px; margin-top: 15px; }
+      .pagination a, .pagination span { padding: 6px 10px; font-size: 12px; }
+      .tooltip .tooltip-text { width: 260px; font-size: 11px; padding: 10px; right: 0; left: auto; margin-left: 0; transform: none; }
+      .no-profile { font-size: 10px; }
+    }
     .stats { display: flex; gap: 20px; margin-bottom: 30px; flex-wrap: wrap; }
     .stat-card { background: #1a1a1a; padding: 15px 20px; border-radius: 8px; border: 1px solid #333; }
     .stat-card .label { color: #888; font-size: 14px; margin-bottom: 5px; }
     .stat-card .value { color: #fff; font-size: 24px; font-weight: bold; }
-    .table-wrapper { width: 100%; overflow-x: visible; overflow-y: visible; }
-    table { width: 100%; min-width: 800px; border-collapse: collapse; background: #1a1a1a; border-radius: 8px; overflow: visible; }
-    th, td { padding: 12px 8px; text-align: left; border-bottom: 1px solid #333; white-space: nowrap; position: relative; }
-    th { background: #252525; color: #fff; font-weight: 600; }
+    .table-wrapper { width: 100%; overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; background: #1a1a1a; border-radius: 8px; table-layout: auto; }
+    th, td { padding: 12px 8px; text-align: left; border-bottom: 1px solid #333; white-space: nowrap; }
+    th { background: #252525; color: #fff; font-weight: 600; position: relative; }
     tr:hover { background: #252525; }
-    td:nth-child(1), td:nth-child(2), td:nth-child(3) { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    td:nth-child(4) { max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
-    .pubkey { font-family: monospace; font-size: 12px; color: #888; display: block; max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
+    td:nth-child(1), td:nth-child(2), td:nth-child(3) { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pubkey { font-family: monospace; font-size: 12px; color: #888; }
     .score { font-weight: bold; color: #4CAF50; }
     .rank { display: inline-block; padding: 4px 8px; background: #333; border-radius: 4px; font-size: 12px; white-space: nowrap; }
     .rank.high { background: #4CAF50; color: #000; }
@@ -187,53 +350,35 @@ module.exports = async function (fastify, opts) {
     a { color: #4CAF50; text-decoration: none; }
     a:hover { text-decoration: underline; }
     .small-text { font-size: 11px; color: #888; display: block; margin-top: 2px; }
-    .tooltip { position: relative; display: inline-block; cursor: help; margin-left: 5px; }
-    .tooltip .tooltip-text {
-      visibility: hidden;
-      width: 320px;
-      background-color: #222;
+    .tooltip-trigger { cursor: pointer; margin-left: 5px; color: #888; font-size: 14px; }
+    .tooltip-trigger:hover { color: #4CAF50; }
+    .tooltip-popup {
+      display: none;
+      position: fixed;
+      z-index: 10000;
+      width: 280px;
+      background: #1a1a1a;
       color: #eee;
-      text-align: left;
-      border-radius: 6px;
-      padding: 12px;
-      position: absolute;
-      z-index: 9999;
-      bottom: 125%;
-      left: 50%;
-      margin-left: -160px;
-      opacity: 0;
-      transition: opacity 0.3s;
-      font-size: 12px;
-      font-weight: normal;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+      padding: 16px;
+      border-radius: 8px;
       border: 1px solid #444;
-      white-space: normal;
-      line-height: 1.4;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.8);
+      font-size: 13px;
+      line-height: 1.5;
     }
-    .tooltip .tooltip-text::after {
-      content: "";
-      position: absolute;
-      top: 100%;
-      left: 50%;
-      margin-left: -5px;
-      border-width: 5px;
-      border-style: solid;
-      border-color: #333 transparent transparent transparent;
-    }
-    .tooltip:hover .tooltip-text {
-      visibility: visible;
-      opacity: 1;
-    }
+    .tooltip-popup.show { display: block; }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>NymRank</h1>
-    <div class="subtitle">Consensus-based namespace, secured by Web-of-Trust</div>
+    <a href="/" style="text-decoration: none;">
+      <h1>NymRank</h1>
+      <div class="subtitle">Consensus-based namespace, secured by Web-of-Trust</div>
+    </a>
     
     <div class="stats">
       <div class="stat-card">
-        <div class="label">Total Users</div>
+        <div class="label">Total Occupied Nyms</div>
         <div class="value">${total.toLocaleString()}</div>
       </div>
       <div class="stat-card">
@@ -242,10 +387,20 @@ module.exports = async function (fastify, opts) {
       </div>
     </div>
     
+    <div style="padding: 12px 16px; background: #1a3a1a; border: 1px solid #4CAF50; border-radius: 8px; margin-bottom: 20px; display: flex; align-items: center; gap: 12px;">
+      <span style="color: #4CAF50; font-size: 18px;">💡</span>
+      <div style="flex: 1;">
+        <strong style="color: #4CAF50;">Want to occupy a name?</strong>
+        <span style="color: #ccc; margin-left: 8px;">Learn how to optimize your profile →</span>
+      </div>
+      <a href="/faq" style="padding: 8px 16px; background: #4CAF50; color: #000; text-decoration: none; border-radius: 6px; font-weight: 600; white-space: nowrap;">FAQ</a>
+    </div>
+    
     <form method="get" action="/">
       <div class="controls">
         <div class="search-box">
           <input type="text" name="search" placeholder="Check slug availability (e.g., 'jack')..." value="${search}">
+          <button type="submit" class="search-btn">Search</button>
         </div>
         <div class="perspective-select">
           <select name="perspective" onchange="this.form.submit()">
@@ -281,22 +436,15 @@ module.exports = async function (fastify, opts) {
         <tr>
           <th>Name</th>
           <th>NIP-05</th>
-          <th>LUD-16</th>
+          <th class="hide-mobile">LUD-16</th>
           <th>Pubkey</th>
           <th>
-            Rank Score
-            <div class="tooltip">ⓘ
-              <span class="tooltip-text">
-                <strong>NymRank Scoring Algorithm</strong><br><br>
-                This score is derived from <strong>GrapeRank</strong> influence scores calculated via the <strong>Web of Trust</strong>.<br><br>
-                • <strong>Weighting:</strong> The raw score is multiplied by the log of verified followers to surface notable accounts.<br>
-                • <strong>Affinity:</strong> During search, exact matches on Name, NIP-05, or LUD-16 receive a significant ranking bonus.
-              </span>
-            </div>
+            Score
+            <span class="tooltip-trigger" onclick="toggleTooltip(event)">ⓘ</span>
           </th>
-          <th>Hops</th>
+          <th class="hide-mobile">Hops</th>
           <th>Followers</th>
-          <th>Last Seen</th>
+          <th class="hide-mobile">Last Seen</th>
         </tr>
       </thead>
       <tbody>
@@ -318,22 +466,28 @@ module.exports = async function (fastify, opts) {
             const lastSeenDate = new Date(row.last_seen * 1000);
             const now = new Date();
             const daysAgo = Math.floor((now - lastSeenDate) / (1000 * 60 * 60 * 24));
-            lastSeenDisplay = daysAgo === 0 ? 'Today' : daysAgo === 1 ? 'Yesterday' : daysAgo < 30 ? daysAgo + 'd ago' : Math.floor(daysAgo / 30) + 'mo ago';
+            if (daysAgo < 7) {
+              lastSeenDisplay = 'Recently';
+            } else if (daysAgo < 30) {
+              lastSeenDisplay = daysAgo + 'd ago';
+            } else {
+              lastSeenDisplay = Math.floor(daysAgo / 30) + 'mo ago';
+            }
           }
           
           return `
             <tr>
-              <td>${row.name ? row.name : '<span class="no-profile">No profile</span>'}</td>
+              <td>${row.name ? row.name : '<span class="no-profile">-</span>'}</td>
               <td>${row.nip05 || '-'}</td>
-              <td>${row.lud16 || '-'}</td>
-              <td><a href="https://primal.net/p/${row.ranked_user_pubkey}" target="_blank" class="pubkey">${row.ranked_user_pubkey}</a></td>
+              <td class="hide-mobile">${row.lud16 || '-'}</td>
+              <td><a href="https://primal.net/p/${row.ranked_user_pubkey}" target="_blank" class="pubkey">${row.ranked_user_pubkey.substring(0, 3)}..${row.ranked_user_pubkey.slice(-3)}</a></td>
               <td>
                 <span class="rank ${rankClass}">${scoreDisplay}</span>
-                <span class="small-text">Base: ${influenceDisplay}</span>
+                <span class="small-text hide-mobile">Base: ${influenceDisplay}</span>
               </td>
-              <td>${row.hops || 0}</td>
+              <td class="hide-mobile">${row.hops || 0}</td>
               <td>${row.follower_count ? row.follower_count.toLocaleString() : 0}</td>
-              <td style="font-size: 12px; color: #888;">${lastSeenDisplay}</td>
+              <td class="hide-mobile" style="font-size: 12px; color: #888;">${lastSeenDisplay}</td>
             </tr>
           `;
         }).join('')}
@@ -347,6 +501,39 @@ module.exports = async function (fastify, opts) {
       ${page < totalPages ? `<a href="/?page=${page + 1}${search ? '&search=' + encodeURIComponent(search) : ''}${perspective ? '&perspective=' + encodeURIComponent(perspective) : ''}">Next →</a>` : '<span>Next →</span>'}
     </div>
   </div>
+  
+  <div id="score-tooltip" class="tooltip-popup">
+    <strong>NymRank Scoring Algorithm</strong><br><br>
+    This score is derived from <strong>GrapeRank</strong> influence scores calculated via the <strong>Web of Trust</strong>.<br><br>
+    <strong>Weighting:</strong> The raw score is multiplied by the log of verified followers to surface notable accounts.<br><br>
+    <strong>Affinity:</strong> During search, results must have a minimum affinity score of 2 to appear.
+    <ul style="margin-left: 20px; margin-top: 5px;">
+      <li>Exact Name Match: +2</li>
+      <li>Name Starts With: +1</li>
+      <li>Exact NIP-05 Match: +1</li>
+      <li>Exact LUD-16 Match: +1</li>
+    </ul>
+  </div>
+  
+  <script>
+    function toggleTooltip(e) {
+      e.stopPropagation();
+      const tooltip = document.getElementById('score-tooltip');
+      if (tooltip.classList.contains('show')) {
+        tooltip.classList.remove('show');
+      } else {
+        const rect = e.target.getBoundingClientRect();
+        tooltip.style.top = (rect.bottom + 8) + 'px';
+        tooltip.style.left = Math.max(10, Math.min(rect.left - 120, window.innerWidth - 290)) + 'px';
+        tooltip.classList.add('show');
+      }
+    }
+    document.addEventListener('click', function(e) {
+      if (!e.target.classList.contains('tooltip-trigger')) {
+        document.getElementById('score-tooltip').classList.remove('show');
+      }
+    });
+  </script>
 </body>
 </html>
     `;
@@ -488,6 +675,14 @@ module.exports = async function (fastify, opts) {
 </html>
     `;
     
+    reply.type('text/html').send(html);
+  });
+
+  // FAQ page - How to optimize your profile (served from static HTML file)
+  fastify.get('/faq', async (request, reply) => {
+    const fs = require('fs');
+    const path = require('path');
+    const html = fs.readFileSync(path.join(__dirname, '../public/faq.html'), 'utf8');
     reply.type('text/html').send(html);
   });
 }

@@ -57,6 +57,14 @@ class RelayListener {
     this.delegationHandler.close();
     this.rankingHandler.close();
     this.profileHandler.close();
+    // Close all websocket connections
+    try {
+      if (this.profileHandler.eventFetcher && this.profileHandler.eventFetcher.pool) {
+        this.profileHandler.eventFetcher.pool.close([...this.relayUrls, ...this.profileRelayUrls]);
+      }
+    } catch (e) {
+      // Ignore close errors
+    }
   }
 }
 

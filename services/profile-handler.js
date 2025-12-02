@@ -9,6 +9,7 @@ class ProfileHandler {
     this.eventProcessor = new EventProcessor(database, log);
     this.database = database;
     this.log = log || console;
+    this.isStopping = false;
   }
 
   async fetchAndProcessProfiles(pubkeys) {
@@ -17,19 +18,21 @@ class ProfileHandler {
       return;
     }
 
-    console.log(`\n[Profile Fetch] Starting: ${pubkeys.length} total ranked users`);
-    
     // Filter out pubkeys we already have profiles for (with timestamp check)
     const newPubkeys = await this.database.filterNewPubkeys(pubkeys);
     if (newPubkeys.length === 0) {
-      console.log('[Profile Fetch] All profiles already cached, skipping.');
+      console.log(`[Profile Refresh] All ${pubkeys.length} profiles queried recently, skipping.`);
     } else {
-      console.log(`[Profile Fetch] Need to fetch: ${newPubkeys.length} profiles (${pubkeys.length - newPubkeys.length} already cached)\n`);
+      console.log(`[Profile Refresh] Fetching ${newPubkeys.length} profiles (${pubkeys.length - newPubkeys.length} queried recently)`);
       
     // Batch requests to avoid "filter too large" errors
     const BATCH_SIZE = 100;
     
     for (let i = 0; i < newPubkeys.length; i += BATCH_SIZE) {
+      if (this.isStopping) {
+        console.log('[Profile Fetch] Shutdown requested, stopping...');
+        return;
+      }
       const batch = newPubkeys.slice(i, i + BATCH_SIZE);
       const batchNum = Math.floor(i / BATCH_SIZE) + 1;
       const totalBatches = Math.ceil(newPubkeys.length / BATCH_SIZE);
@@ -70,54 +73,79 @@ class ProfileHandler {
       }
     }
     
-    console.log(`\n[Profile Fetch] Complete! Processed profiles from ${newPubkeys.length} queries.\n`);
+    console.log(`[Profile Refresh] Complete - ${newPubkeys.length} profiles fetched.`);
     }
     
-    // Always check activity for ALL ranked users (not just new ones)
-    // Activity should be updated periodically to keep "last seen" current
-    console.log(`[Activity Check] Fetching latest activity for ${pubkeys.length} users...\n`);
-    
-    // Filter to users without activity timestamp OR whose activity is stale (>7 days)
-    // We rely on last_query_attempt to prevent re-querying users we recently checked,
-    // even if we didn't find any activity for them.
+    // Filter to users whose activity is stale (>7 days since last query)
+    // Use LEFT JOIN instead of NOT IN for better performance
     const pubkeysNeedingActivity = await this.database.query(`
-      SELECT DISTINCT ranked_user_pubkey FROM user_rankings
-      WHERE ranked_user_pubkey NOT IN (
-        SELECT pubkey FROM profile_refresh_queue 
-        WHERE last_query_attempt > NOW() - INTERVAL '7 days'
-      )
+      SELECT DISTINCT ur.ranked_user_pubkey 
+      FROM user_rankings ur
+      LEFT JOIN profile_refresh_queue prq ON ur.ranked_user_pubkey = prq.pubkey 
+        AND prq.last_query_attempt > NOW() - INTERVAL '7 days'
+      WHERE prq.pubkey IS NULL
       LIMIT 208691
     `);
     const activityPubkeys = pubkeysNeedingActivity.rows.map(r => r.ranked_user_pubkey);
     
     if (activityPubkeys.length === 0) {
-      console.log('[Activity Check] All users have recent activity data, skipping.\n');
+      console.log('[Activity Refresh] All users queried within 7 days, skipping.');
       return;
     }
     
-    console.log(`[Activity Check] ${activityPubkeys.length} users need activity check\n`);
+    console.log(`[Activity Refresh] ${activityPubkeys.length} users need activity check (stale >7 days)`);
     
     const BATCH_SIZE = 100;
     for (let i = 0; i < activityPubkeys.length; i += BATCH_SIZE) {
+      if (this.isStopping) {
+        console.log('[Activity Refresh] Shutdown requested, stopping...');
+        return;
+      }
       const batch = activityPubkeys.slice(i, i + BATCH_SIZE);
       const batchNum = Math.floor(i / BATCH_SIZE) + 1;
       const totalBatches = Math.ceil(activityPubkeys.length / BATCH_SIZE);
       const progressPct = Math.round((i / activityPubkeys.length) * 100);
       
-      console.log(`[Activity Check] Batch ${batchNum}/${totalBatches} (${progressPct}%)`);
+      console.log(`[Activity Refresh] Batch ${batchNum}/${totalBatches} (${progressPct}%)`);
+      
+      // Get last activity timestamps for this batch to filter events
+      const lastCheckResult = await this.database.query(`
+        SELECT pubkey, 
+               COALESCE(
+                 last_activity_timestamp, 
+                 CASE WHEN last_query_attempt IS NOT NULL THEN EXTRACT(EPOCH FROM last_query_attempt)::BIGINT ELSE 0 END,
+                 0
+               ) as last_check_ts
+        FROM profile_refresh_queue
+        WHERE pubkey = ANY($1::text[])
+      `, [batch]);
+      
+      const lastCheckMap = new Map();
+      lastCheckResult.rows.forEach(row => {
+        lastCheckMap.set(row.pubkey, row.last_check_ts || 0);
+      });
+      
+      // Initialize missing pubkeys with 0 (they're not in the queue yet)
+      batch.forEach(pubkey => {
+        if (!lastCheckMap.has(pubkey)) {
+          lastCheckMap.set(pubkey, 0);
+        }
+      });
       
       // Query for most recent event of any kind authored by these users (use different relays for activity)
       const activityRelayUrls = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.snort.social', 'wss://relay.primal.net', 'wss://relay.nostr.band', 'wss://nostrue.com'];
       
-      // Use a limit to prevent fetching too many events per user, but enough to cover the batch
-      // Note: limit applies to the whole filter, not per-author. 
-      // We use 500 (common relay max) to get as much coverage as possible for the batch of 100.
+      // Don't use since filter - we want the most recent events regardless of when we last checked
+      // The limit applies to the whole filter, not per-author
+      // Relay limit is 500, so with 100 users per batch we should get recent events for most
+      const activityFilter = { authors: batch, limit: 500 };
+      
       const activityEvents = await this.eventFetcher.pool.querySync(
         activityRelayUrls,
-        { authors: batch, limit: 500 }
+        activityFilter
       );
       
-      // Build activity map for this batch only
+      // Build activity map for this batch - take the most recent event per user
       const batchActivity = new Map();
       activityEvents.forEach(event => {
         const existing = batchActivity.get(event.pubkey);
@@ -126,13 +154,13 @@ class ProfileHandler {
         }
       });
       
+      console.log(`[Activity Refresh] Found ${batchActivity.size} users with activity out of ${batch.length} queried`);
+      
       // Record activity for this batch immediately (don't accumulate)
-      console.log(`[Activity Check] About to call recordProfileQueryAttempt with ${batch.length} pubkeys, ${batchActivity.size} activity entries`);
       try {
         await this.database.recordProfileQueryAttempt(batch, new Map(), batchActivity);
-        console.log(`[Activity Check] recordProfileQueryAttempt completed successfully`);
       } catch (err) {
-        console.error(`[Activity Check] Failed to record attempt for batch: ${err.message}`);
+        console.error(`[Activity Refresh] Failed to record batch: ${err.message}`);
         console.error(err.stack);
       }
       
@@ -141,10 +169,11 @@ class ProfileHandler {
       }
     }
     
-    console.log(`\n[Activity Check] Complete!\n`);
+    console.log(`[Activity Refresh] Complete.`);
   }
 
   close() {
+    this.isStopping = true;
     this.eventFetcher.close();
   }
 }

@@ -128,17 +128,31 @@ const shutdown = async () => {
   if (isShuttingDown) return;
   isShuttingDown = true;
   
-  console.log('\nShutting down gracefully...');
+  console.log('\nShutting down...');
+  
+  // Force exit after 5 seconds (querySync default timeout is 4s)
+  setTimeout(() => {
+    process.exit(0);
+  }, 5000).unref();
   
   // Stop accepting new work
   if (relayListener) {
     relayListener.close();
   }
   
-  // Give ongoing operations time to complete
-  await new Promise(resolve => setTimeout(resolve, 2000));
+  // Close database
+  try {
+    await database.disconnect();
+  } catch (e) {
+    // Ignore errors during shutdown
+  }
   
-  await server.close();
+  try {
+    await server.close();
+  } catch (e) {
+    // Ignore
+  }
+  
   process.exit(0);
 };
 

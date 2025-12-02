@@ -46,6 +46,7 @@ CREATE INDEX idx_ranked_user ON user_rankings(ranked_user_pubkey);
 CREATE INDEX idx_rank_value ON user_rankings(rank_value);
 CREATE INDEX idx_service ON user_rankings(service_pubkey);
 CREATE INDEX idx_committee_member ON user_rankings(committee_member_pubkey);
+CREATE INDEX idx_user_rankings_influence_follower ON user_rankings(influence_score DESC, follower_count DESC);
 
 -- Delegations (from kind 10040 events)
 CREATE TABLE delegations (
@@ -97,6 +98,7 @@ CREATE INDEX idx_pubkey ON name_occupations(pubkey);
 CREATE TABLE profile_refresh_queue (
     pubkey VARCHAR(64) PRIMARY KEY,
     profile_timestamp BIGINT NOT NULL,    -- Timestamp of the kind 0 event we're using
+    last_activity_timestamp BIGINT,       -- Most recent activity timestamp from any event
     last_query_attempt TIMESTAMP,         -- When we last tried to fetch this profile
     queued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     priority INTEGER DEFAULT 0,
@@ -108,7 +110,55 @@ CREATE INDEX idx_priority ON profile_refresh_queue(priority);
 CREATE INDEX idx_retry_count ON profile_refresh_queue(retry_count);
 CREATE INDEX idx_last_query_attempt ON profile_refresh_queue(last_query_attempt);
 
--- Averaged User Rankings (computed aggregations)
+-- Pre-computed rankings for fast queries
+CREATE MATERIALIZED VIEW precomputed_rankings AS
+SELECT 
+  ur.ranked_user_pubkey,
+  un.name,
+  un.nip05,
+  un.lud16,
+  AVG(ur.rank_value)::INTEGER as rank_value,
+  AVG(ur.influence_score) as influence_score,
+  AVG(ur.hops)::INTEGER as hops,
+  AVG(ur.follower_count)::INTEGER as follower_count,
+  COALESCE(MAX(prq.last_activity_timestamp), MAX(un.profile_timestamp)) as last_seen,
+  (AVG(ur.influence_score) * LOG(GREATEST(AVG(ur.follower_count), 1) + 1)) as effective_score
+FROM user_rankings ur
+LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey
+LEFT JOIN profile_refresh_queue prq ON ur.ranked_user_pubkey = prq.pubkey
+GROUP BY ur.ranked_user_pubkey, un.pubkey, un.name, un.nip05, un.lud16;
+
+CREATE UNIQUE INDEX idx_precomputed_pubkey ON precomputed_rankings(ranked_user_pubkey);
+CREATE INDEX idx_precomputed_effective_score ON precomputed_rankings(effective_score DESC NULLS LAST);
+CREATE INDEX idx_precomputed_name ON precomputed_rankings(name);
+CREATE INDEX idx_precomputed_nip05 ON precomputed_rankings(nip05);
+CREATE INDEX idx_precomputed_lud16 ON precomputed_rankings(lud16);
+
+-- Function to refresh the materialized view
+CREATE OR REPLACE FUNCTION refresh_precomputed_rankings()
+RETURNS void AS $$
+BEGIN
+  REFRESH MATERIALIZED VIEW CONCURRENTLY precomputed_rankings;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Trigger function to mark refresh needed (actual refresh done async)
+CREATE OR REPLACE FUNCTION trigger_rankings_refresh()
+RETURNS TRIGGER AS $$
+BEGIN
+  -- Use pg_notify to signal refresh needed (app listens for this)
+  PERFORM pg_notify('rankings_changed', '');
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Trigger on user_rankings insert/update
+CREATE TRIGGER rankings_changed_trigger
+AFTER INSERT OR UPDATE ON user_rankings
+FOR EACH STATEMENT
+EXECUTE FUNCTION trigger_rankings_refresh();
+
+-- Legacy table kept for compatibility
 CREATE TABLE averaged_user_rankings (
     ranked_user_pubkey VARCHAR(64) PRIMARY KEY,
     average_rank DECIMAL(5,2) NOT NULL,
