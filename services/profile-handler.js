@@ -95,7 +95,7 @@ class ProfileHandler {
     
     console.log(`[Activity Refresh] ${activityPubkeys.length} users need activity check (stale >7 days)`);
     
-    const BATCH_SIZE = 100;
+    const BATCH_SIZE = 50;
     for (let i = 0; i < activityPubkeys.length; i += BATCH_SIZE) {
       if (this.isStopping) {
         console.log('[Activity Refresh] Shutdown requested, stopping...');
@@ -135,33 +135,50 @@ class ProfileHandler {
       // Query for most recent event of any kind authored by these users (use different relays for activity)
       const activityRelayUrls = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.snort.social', 'wss://relay.primal.net', 'wss://relay.nostr.band', 'wss://nostrue.com'];
       
-      // Don't use since filter - we want the most recent events regardless of when we last checked
+      // Use minimum since timestamp for the batch to only get events newer than last check
+      const sinceTimestamps = Array.from(lastCheckMap.values()).filter(ts => ts > 0);
+      const minSince = sinceTimestamps.length > 0 ? Math.min(...sinceTimestamps) : 0;
+      
       // The limit applies to the whole filter, not per-author
-      // Relay limit is 500, so with 100 users per batch we should get recent events for most
+      // Relay limit is 500, so with 50 users per batch we get ~10 events per user on average
       const activityFilter = { authors: batch, limit: 500 };
+      if (minSince > 0) {
+        activityFilter.since = minSince;
+      }
       
       const activityEvents = await this.eventFetcher.pool.querySync(
         activityRelayUrls,
         activityFilter
       );
       
-      // Build activity map for this batch - take the most recent event per user
+      // Build activity map for this batch - only keep events newer than last check per user
       const batchActivity = new Map();
       activityEvents.forEach(event => {
-        const existing = batchActivity.get(event.pubkey);
-        if (!existing || event.created_at > existing) {
-          batchActivity.set(event.pubkey, event.created_at);
+        const lastCheck = lastCheckMap.get(event.pubkey) || 0;
+        // Only update if this event is newer than the last check
+        if (event.created_at > lastCheck) {
+          const existing = batchActivity.get(event.pubkey);
+          if (!existing || event.created_at > existing) {
+            batchActivity.set(event.pubkey, event.created_at);
+          }
         }
       });
       
       console.log(`[Activity Refresh] Found ${batchActivity.size} users with activity out of ${batch.length} queried`);
       
-      // Record activity for this batch immediately (don't accumulate)
-      try {
-        await this.database.recordProfileQueryAttempt(batch, new Map(), batchActivity);
-      } catch (err) {
-        console.error(`[Activity Refresh] Failed to record batch: ${err.message}`);
-        console.error(err.stack);
+      // Only update last_query_attempt for users we found activity for
+      // Users without activity will have NULL last_query_attempt and get re-checked
+      const usersWithActivity = Array.from(batchActivity.keys());
+      
+      if (usersWithActivity.length > 0) {
+        try {
+          await this.database.recordProfileQueryAttempt(usersWithActivity, new Map(), batchActivity);
+        } catch (err) {
+          console.error(`[Activity Refresh] Failed to record batch: ${err.message}`);
+          console.error(err.stack);
+        }
+      } else {
+        console.log(`[Activity Refresh] No activity found for batch, skipping database update`);
       }
       
       if (i + BATCH_SIZE < activityPubkeys.length) {

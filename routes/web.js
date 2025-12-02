@@ -319,6 +319,7 @@ module.exports = async function (fastify, opts) {
       th { font-size: 11px; }
       .hide-mobile { display: none !important; }
       .pubkey { font-size: 10px; }
+      td:nth-child(4) { max-width: 80px; overflow: hidden; text-overflow: ellipsis; }
       .rank { padding: 3px 6px; font-size: 11px; }
       .small-text { display: none; }
       .pagination { gap: 5px; margin-top: 15px; }
@@ -337,6 +338,10 @@ module.exports = async function (fastify, opts) {
     tr:hover { background: #252525; }
     td:nth-child(1), td:nth-child(2), td:nth-child(3) { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .pubkey { font-family: monospace; font-size: 12px; color: #888; }
+    td:nth-child(4) { max-width: 200px; }
+    @media (max-width: 1200px) {
+      td:nth-child(4) { max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
+    }
     .score { font-weight: bold; color: #4CAF50; }
     .rank { display: inline-block; padding: 4px 8px; background: #333; border-radius: 4px; font-size: 12px; white-space: nowrap; }
     .rank.high { background: #4CAF50; color: #000; }
@@ -480,7 +485,7 @@ module.exports = async function (fastify, opts) {
               <td>${row.name ? row.name : '<span class="no-profile">-</span>'}</td>
               <td>${row.nip05 || '-'}</td>
               <td class="hide-mobile">${row.lud16 || '-'}</td>
-              <td><a href="https://primal.net/p/${row.ranked_user_pubkey}" target="_blank" class="pubkey">${row.ranked_user_pubkey.substring(0, 3)}..${row.ranked_user_pubkey.slice(-3)}</a></td>
+              <td><a href="https://primal.net/p/${row.ranked_user_pubkey}" target="_blank" class="pubkey" title="${row.ranked_user_pubkey}">${row.ranked_user_pubkey}</a></td>
               <td>
                 <span class="rank ${rankClass}">${scoreDisplay}</span>
                 <span class="small-text hide-mobile">Base: ${influenceDisplay}</span>
