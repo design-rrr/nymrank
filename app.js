@@ -150,7 +150,7 @@ server.get('/check-activity', async (request, reply) => {
     }
 
     // Query relays for activity (any event kind)
-    const activityRelayUrls = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.snort.social', 'wss://relay.primal.net', 'wss://relay.nostr.band'];
+    const activityRelayUrls = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.snort.social', 'wss://relay.primal.net'];
     const { SimplePool, useWebSocketImplementation } = require('nostr-tools/pool');
     const WebSocket = require('ws');
     useWebSocketImplementation(WebSocket);

@@ -97,7 +97,7 @@ class ProfileHandler {
     
     console.log(`[ACTIVITY CHECK] Checking activity for ${activityPubkeys.length} users (last_activity_check NULL or >7 days old)`);
     
-    const BATCH_SIZE = 5; // Even smaller batches to avoid relay timeouts
+    const BATCH_SIZE = 10; // Increased batch size for faster processing
     for (let i = 0; i < activityPubkeys.length; i += BATCH_SIZE) {
       if (this.isStopping) {
         console.log('[ACTIVITY CHECK] Shutdown requested, stopping...');
@@ -135,18 +135,31 @@ class ProfileHandler {
         }
       });
       
-      // Query for most recent event of any kind authored by these users (use different relays for activity)
-      const activityRelayUrls = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.snort.social', 'wss://relay.primal.net', 'wss://relay.nostr.band'];
+      // Query for most recent activity events (see kinds list below) authored by these users (use different relays for activity)
+      const activityRelayUrls = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.snort.social', 'wss://relay.primal.net'];
       
       // Use minimum since timestamp for the batch to only get events newer than last check
       const sinceTimestamps = Array.from(lastCheckMap.values()).filter(ts => ts > 0);
       const minSince = sinceTimestamps.length > 0 ? Math.min(...sinceTimestamps) : 0;
       
       // The limit applies to the whole filter, not per-author
-      // Relay limit is 500, so with 5 users per batch we get ~100 events per user on average
-      // No kinds filter = any kind (faster, but some relays may reject)
+      // Relay limit is 500, so with 10 users per batch we get ~50 events per user on average
       const activityFilter = { 
-        authors: batch, 
+        authors: batch,
+        kinds: [
+          1,      // Text notes (NIP-01)
+          3,      // Contacts/follows (NIP-02)
+          4,      // Encrypted DMs (NIP-04)
+          5,      // Event deletion (NIP-09)
+          6,      // Reposts (NIP-18)
+          7,      // Reactions (NIP-25)
+          16,     // Generic repost (NIP-18, alternative to 6)
+          21,     // Video (NIP-94)
+          22,     // Video (NIP-94)
+          1984,   // Reports (NIP-56)
+          30023,  // Long-form articles (NIP-23)
+          9734    // Zap receipt (NIP-57)
+        ],
         limit: 500 
       };
       if (minSince > 0) {
@@ -162,8 +175,8 @@ class ProfileHandler {
       let activityEvents = [];
       let retryCount = 0;
       const MAX_RETRIES = 1; // Retry once with even longer timeout
-      const INITIAL_MAX_WAIT = 15000; // 15s initial timeout to wait for all relays
-      const RETRY_MAX_WAIT = 30000; // 30s retry timeout
+      const INITIAL_MAX_WAIT = 5000; // 5s initial timeout to wait for all relays
+      const RETRY_MAX_WAIT = 10000; // 10s retry timeout
       
       while (retryCount <= MAX_RETRIES) {
         try {

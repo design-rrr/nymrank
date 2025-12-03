@@ -69,7 +69,7 @@ npm run dev
 
 The app will:
 1. Fetch profiles (kind 0) for all ranked users (daily refresh)
-2. Check activity (any event authored by ranked users) for staleness display (7-day refresh)
+2. Check for activity to update LastSeen display (7-day refresh)
 3. Start the web UI on http://localhost:3000
 
 ## Features
@@ -77,14 +77,14 @@ The app will:
 - **Multi-perspective Ranking**: Averages reputation scores from all committee members
 - **Name Availability**: Search tool to check if a name/handle is occupied
 - **Activity Tracking**: Displays when users were last active ("Recently" for <7 days, "Xd ago" for 7-29 days, "Xmo ago" for 30+ days)
-- **Name Affinity Scoring**: Scores based on name, NIP-05, and LUD-16 fields (partial matches score lower)
+- **Name Affinity Scoring**: Scores based on name, NIP-05, and LUD-16 fields (partial name matches score lower)
 - **FAQ Page**: Explains how to optimize profiles for name occupation
 
 ## Architecture
 
 - **Backfill**: Negentropy sync via strfry for efficient historical data transfer
 - **Profile Fetching**: Batched relay queries for kind 0 events with 1-day cooldown
-- **Activity Checking**: Batched relay queries for any event kind with 7-day cooldown
+- **Activity Checking**: Batched relay queries for various event kind with 7-day cooldown
 - **Rankings**: Per-committee-member storage in DB, averaged on search/browse
 - **Materialized View**: `precomputed_rankings` for fast default list queries
 - **UI**: Fastify web server with search, browse, pagination, and perspective switching
@@ -97,7 +97,7 @@ The app will:
 - `user_names`: Profile metadata (name, nip05, lud16) from kind 0 events
 - `profile_refresh_queue`: Tracks profile and activity fetch timestamps
   - `profile_timestamp`: Timestamp of the kind 0 event
-  - `last_activity_timestamp`: Most recent activity from any event
+  - `last_activity_timestamp`: Most recent activity event
   - `last_profile_fetch`: When we last fetched kind-0 profile
   - `last_activity_check`: When we last checked for activity events
 
@@ -132,7 +132,6 @@ The app will:
 - `wss://nos.lol`
 - `wss://relay.snort.social`
 - `wss://relay.primal.net`
-- `wss://relay.nostr.band`
 
 ## Maintenance
 
