@@ -76,9 +76,15 @@ server.register(require('@fastify/static'), {
 server.register(require('./routes/web'));
 
 // --- Routes ---
+let statsCache = { data: null, expires: 0 };
+const STATS_CACHE_TTL = 600000; // 10 minutes
+
 server.get('/stats', async (request, reply) => {
   try {
-    server.log.info('Stats endpoint called');
+    // Return cached stats if valid
+    if (statsCache.data && Date.now() < statsCache.expires) {
+      return statsCache.data;
+    }
     
     // Ensure database is connected
     if (!database.client) {
@@ -103,7 +109,9 @@ server.get('/stats', async (request, reply) => {
       delegations: delegationsCount
     };
     
-    server.log.info('Stats result:', stats);
+    // Cache the result
+    statsCache = { data: stats, expires: Date.now() + STATS_CACHE_TTL };
+    
     return stats;
   } catch (error) {
     server.log.error(error, 'Error fetching stats');
