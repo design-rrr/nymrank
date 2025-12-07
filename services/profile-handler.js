@@ -76,26 +76,30 @@ class ProfileHandler {
     console.log(`[KIND-0 PROFILE FETCH] Complete - ${newPubkeys.length} kind-0 profiles fetched.`);
     }
     
-    // Filter to users whose activity is stale:
+    // Filter to users whose activity is stale AND meet minimum base score:
     //   - never checked before (no row in profile_refresh_queue), OR
     //   - last_activity_check older than 7 days
+    //   - rank_value >= 35 (minimum base score threshold, filters out bots/inactive)
+    const MIN_RANK_VALUE = 35;
     const pubkeysNeedingActivity = await this.database.query(`
-      SELECT DISTINCT ur.ranked_user_pubkey
+      SELECT ur.ranked_user_pubkey
       FROM user_rankings ur
       LEFT JOIN profile_refresh_queue prq
         ON ur.ranked_user_pubkey = prq.pubkey
-      WHERE prq.pubkey IS NULL
+      WHERE (prq.pubkey IS NULL
          OR prq.last_activity_check IS NULL
-         OR prq.last_activity_check <= NOW() - INTERVAL '7 days'
-    `);
+         OR prq.last_activity_check <= NOW() - INTERVAL '7 days')
+         AND ur.rank_value >= $1
+      GROUP BY ur.ranked_user_pubkey
+    `, [MIN_RANK_VALUE]);
     const activityPubkeys = pubkeysNeedingActivity.rows.map(r => r.ranked_user_pubkey);
     
     if (activityPubkeys.length === 0) {
-      console.log('[ACTIVITY CHECK] All users queried within 7 days, skipping.');
+      console.log(`[ACTIVITY CHECK] All eligible users (rank_value >= ${MIN_RANK_VALUE}) queried within 7 days, skipping.`);
       return;
     }
     
-    console.log(`[ACTIVITY CHECK] Checking activity for ${activityPubkeys.length} users (last_activity_check NULL or >7 days old)`);
+    console.log(`[ACTIVITY CHECK] Checking activity for ${activityPubkeys.length} users (last_activity_check NULL or >7 days old, rank_value >= ${MIN_RANK_VALUE})`);
     
     const BATCH_SIZE = 10; // Increased batch size for faster processing
     for (let i = 0; i < activityPubkeys.length; i += BATCH_SIZE) {
