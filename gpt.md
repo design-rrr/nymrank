@@ -50,7 +50,7 @@ Build a **name reputation system** that warns users when trying to register name
 
 ## Data Sources
 - **Ranking Relay**: `ws://localhost:7777` (local strfry, synced from `wss://nip85.brainstorm.world`)
-- **Profile/Activity Relays**: `wss://relay.damus.io`, `wss://nos.lol`, `wss://relay.snort.social`, `wss://relay.primal.net`
+- **Profile/Activity Relays**: `wss://relay.damus.io`, `wss://nos.lol`, `wss://relay.primal.net`
 - **Event kinds**: 
   - `0` (profiles) - fetched daily for name/nip05/lud16 fields
   - `10040` (delegations) - who delegates to which service keys
@@ -480,7 +480,7 @@ INSERT INTO reserved_names (name, reason, description, added_by) VALUES
 **Stage 1: Profile Fetching (Kind 0)**
 - **Trigger**: On startup for all ranked users with `last_profile_fetch` older than 1 day
 - **Method**: Batched relay queries (500 pubkeys per batch for replaceable kind-0 events)
-- **Relays**: `wss://relay.damus.io`, `wss://nos.lol`, `wss://relay.snort.social`, `wss://relay.primal.net`
+- **Relays**: `wss://relay.damus.io`, `wss://nos.lol`, `wss://relay.primal.net`
 - **Query**: `{ kinds: [0], authors: [batch_pubkeys], limit: 500 }`
 - **Updates**: `profile_timestamp`, `last_profile_fetch` in `profile_refresh_queue`
 

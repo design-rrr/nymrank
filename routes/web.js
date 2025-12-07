@@ -271,6 +271,19 @@ module.exports = async function (fastify, opts) {
     const total = parseInt(countResult.rows[0].count);
     const totalPages = Math.ceil(total / limit);
     
+    // Pre-calculate effective scores and filter grey results when greens exist (for search)
+    const rowsWithScores = result.rows.map(row => {
+      const influence = row.influence_score ? parseFloat(row.influence_score) : 0;
+      const followers = parseInt(row.follower_count || 0);
+      const effectiveScore = row.effective_score || (influence * Math.log10(Math.max(followers, 1) + 1));
+      return { ...row, _effectiveScore: effectiveScore };
+    });
+    
+    const hasGreenResults = rowsWithScores.some(r => r._effectiveScore >= 3.0);
+    const displayRows = (search && hasGreenResults)
+      ? rowsWithScores.filter(r => r._effectiveScore >= 1.0)  // Filter out grey when greens exist in search
+      : rowsWithScores;
+    
     const html = `
 <!DOCTYPE html>
 <html>
@@ -445,16 +458,16 @@ module.exports = async function (fastify, opts) {
       </div>
     </form>
     
-    ${search && result.rows.length === 0 ? `
+    ${search && displayRows.length === 0 ? `
     <div style="padding: 20px; background: #1a1a1a; border-radius: 8px; border: 1px solid #333; margin-bottom: 20px; text-align: center;">
       <div style="color: #4CAF50; font-size: 18px; font-weight: bold; margin-bottom: 10px;">✓ "${search}" is available!</div>
       <div style="color: #888;">No users currently occupy this name.</div>
     </div>
     ` : ''}
-    ${search && result.rows.length > 0 ? `
+    ${search && displayRows.length > 0 ? `
     <div style="padding: 20px; background: #1a1a1a; border-radius: 8px; border: 1px solid #333; margin-bottom: 20px; text-align: center;">
       <div style="color: #FF5252; font-size: 18px; font-weight: bold; margin-bottom: 10px;">⚠ "${search}" is occupied</div>
-      <div style="color: #888;">${result.rows.length} user(s) currently have this name. Showing highest reputation:</div>
+      <div style="color: #888;">${displayRows.length} user(s) currently have this name. Showing highest reputation:</div>
     </div>
     ` : ''}
     
@@ -476,16 +489,18 @@ module.exports = async function (fastify, opts) {
         </tr>
       </thead>
       <tbody>
-        ${result.rows.map(row => {
+        ${displayRows.map(row => {
           const influence = row.influence_score ? parseFloat(row.influence_score) : 0;
+          const followers = parseInt(row.follower_count || 0);
           
-          // Use effective score if available (from non-search query), otherwise use influence (but we should probably always use effective in display if that's what we sort by)
-          // Actually, let's calculate effective score here for display consistency if it wasn't in the SELECT (though it is now)
-          // Or better: Use the blended/effective score for the main ranking display
+          // Use pre-calculated effective score
+          const effectiveScore = row._effectiveScore;
           
-          const effectiveScore = row.effective_score || (row.blended_score ? row.blended_score : (influence * Math.log(Math.max(parseInt(row.follower_count || 0), 1) + 1)));
-          
-          const rankClass = influence >= 0.9 ? 'high' : influence >= 0.7 ? 'med' : 'low';
+          // Color based on effective score (occupation strength)
+          // Score >= 3.0 indicates firm occupation (Green)
+          // Score >= 1.0 indicates partial occupation (Orange)
+          // Score < 1.0 indicates weak occupation (Grey)
+          const rankClass = effectiveScore >= 3.0 ? 'high' : effectiveScore >= 1.0 ? 'med' : 'low';
           const scoreDisplay = effectiveScore ? effectiveScore.toFixed(2) : '0.00';
           const influenceDisplay = influence ? influence.toFixed(4) : '0.0000';
           const fullPubkey = row.ranked_user_pubkey || '';
@@ -573,6 +588,10 @@ module.exports = async function (fastify, opts) {
         document.getElementById('score-tooltip').classList.remove('show');
       }
     });
+  </script>
+  <script type="module">
+    import { init } from '/public/plausible.js';
+    init({ domain: 'nymrank.dev' });
   </script>
 </body>
 </html>
@@ -711,6 +730,10 @@ module.exports = async function (fastify, opts) {
       </div>
     </div>
   </div>
+  <script type="module">
+    import { init } from '/public/plausible.js';
+    init({ domain: 'nymrank.dev' });
+  </script>
 </body>
 </html>
     `;

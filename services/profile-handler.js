@@ -136,7 +136,7 @@ class ProfileHandler {
       });
       
       // Query for most recent activity events (see kinds list below) authored by these users (use different relays for activity)
-      const activityRelayUrls = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.snort.social', 'wss://relay.primal.net'];
+      const activityRelayUrls = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net'];
       
       // Use minimum since timestamp for the batch to only get events newer than last check
       const sinceTimestamps = Array.from(lastCheckMap.values()).filter(ts => ts > 0);
@@ -276,7 +276,8 @@ class ProfileHandler {
         }
       });
       
-      console.log(`[ACTIVITY CHECK] Relay returned ${activityEvents.length} total events; ${batchActivity.size}/${batch.length} users had new activity`);
+      const eventCount = activityEvents.length;
+      console.log(`[ACTIVITY CHECK] Relay returned ${eventCount} total events; ${batchActivity.size}/${batch.length} users had new activity`);
       
       // KEYS WITH A RESULT: update last_activity_timestamp and last_activity_check
       const usersWithActivity = Array.from(batchActivity.keys());
@@ -292,7 +293,7 @@ class ProfileHandler {
       // KEYS WITHOUT A RESULT: get re-batched (no DB update, they stay stale)
       // EXCEPTION: if the WHOLE batch returned 0 events AFTER retry, mark all as checked
       // (querySync waits for all relays to respond, so 0 events means user is legitimately inactive)
-      if (activityEvents.length === 0 && retryCount >= MAX_RETRIES) {
+      if (eventCount === 0 && retryCount >= MAX_RETRIES) {
         console.log('[ACTIVITY CHECK] Batch returned 0 events after retry; all relays responded. Marking all pubkeys as checked (inactive).');
         const usersWithoutActivity = batch.filter(p => !batchActivity.has(p));
         if (usersWithoutActivity.length > 0) {
@@ -303,9 +304,20 @@ class ProfileHandler {
             console.error(err.stack);
           }
         }
-      } else if (activityEvents.length === 0) {
+      } else if (eventCount === 0) {
         console.log('[ACTIVITY CHECK] Batch returned 0 events on first try; will retry next run (not marking as checked yet).');
         // Don't update last_activity_check - leave it NULL so it gets re-batched
+      }
+      
+      // Clear all batch-local references to help GC
+      activityEvents = null;
+      lastCheckResult.rows.length = 0;
+      lastCheckMap.clear();
+      batchActivity.clear();
+      
+      // Force garbage collection if available (run with --expose-gc)
+      if (global.gc) {
+        global.gc();
       }
       
       // Delay after each batch to be nice to relays

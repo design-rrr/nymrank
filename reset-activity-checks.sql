@@ -13,3 +13,4 @@ SELECT
   COUNT(*) FILTER (WHERE last_activity_check IS NULL) as rows_with_check_reset
 FROM profile_refresh_queue;
 
+

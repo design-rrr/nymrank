@@ -17,7 +17,7 @@ async function importAttestations() {
   const eventProcessor = new EventProcessor(database, log);
   
   const rl = readline.createInterface({
-    input: fs.createReadStream('/home/justin/nymrank/attestations.jsonl'),
+    input: fs.createReadStream('/home/justin/nymrank/attestations120325.jsonl'),
     crlfDelay: Infinity
   });
 
@@ -35,7 +35,7 @@ async function importAttestations() {
       batch.push(event);
       
       if (batch.length >= BATCH_SIZE) {
-        await eventProcessor.processEvents(batch);
+        await eventProcessor.processEvents(batch, 30382);
         count += batch.length;
         log.info(`Processed ${count} events (${pubkeys.size} unique pubkeys so far)...`);
         batch = [];
@@ -49,7 +49,7 @@ async function importAttestations() {
 
   // Process remaining batch
   if (batch.length > 0) {
-    await eventProcessor.processEvents(batch);
+    await eventProcessor.processEvents(batch, 30382);
     count += batch.length;
   }
 

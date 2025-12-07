@@ -18,7 +18,11 @@ const COMMITTEE_MEMBERS = [
 ];
 
 async function runBackfill() {
+  // Calculate timestamp for 1 week ago
+  const ONE_WEEK_AGO = Math.floor((Date.now() - (7 * 24 * 60 * 60 * 1000)) / 1000);
+  
   console.log('🔄 Starting NymRank backfill...\n');
+  console.log(`Filtering attestations from the past week (since ${new Date(ONE_WEEK_AGO * 1000).toISOString()})\n`);
   
   // Check if strfry exists
   if (!fs.existsSync(STRFRY_PATH)) {
@@ -64,25 +68,41 @@ async function runBackfill() {
     await db.connect();
     
     // Get delegations from strfry to extract service keys
-    const delegationExport = spawn(STRFRY_PATH, ['--config=' + STRFRY_CONFIG, 'export'], {
-      cwd: path.join(__dirname, '..', 'strfry')
-    });
+    // Use execSync to avoid stream handling issues
+    let exportOutput = '';
+    try {
+      exportOutput = execSync(`${STRFRY_PATH} --config=${STRFRY_CONFIG} export`, {
+        cwd: path.join(__dirname, '..', 'strfry'),
+        encoding: 'utf8',
+        maxBuffer: 100 * 1024 * 1024 // 100MB buffer
+      });
+    } catch (err) {
+      // strfry export might exit with non-zero if no events, but still output data
+      if (err.stdout) {
+        exportOutput = err.stdout;
+      } else {
+        throw err;
+      }
+    }
     
     const serviceKeys = new Set();
-    const delegationRl = readline.createInterface({
-      input: delegationExport.stdout,
-      crlfDelay: Infinity
-    });
+    const lines = exportOutput.split('\n');
+    let totalEvents = 0;
+    let delegationEvents = 0;
     
-    // Extract service keys from delegations
-    for await (const line of delegationRl) {
+    for (const line of lines) {
       if (!line.trim()) continue;
+      totalEvents++;
       try {
         const event = JSON.parse(line);
         if (event.kind === 10040) {
+          delegationEvents++;
           const delData = processor.parseDelegationEvent(event);
           if (delData.service_pubkey) {
             serviceKeys.add(delData.service_pubkey);
+            console.log(`  Found service key: ${delData.service_pubkey.substring(0, 16)}...`);
+          } else {
+            console.log(`  Warning: Delegation event ${event.id?.substring(0, 16)}... has no service_pubkey`);
           }
           // Also insert delegation into PostgreSQL
           await processor.handleDelegationEvent(event);
@@ -92,7 +112,13 @@ async function runBackfill() {
       }
     }
     
-    console.log(`✓ Found ${serviceKeys.size} service keys\n`);
+    console.log(`✓ Processed ${totalEvents} total events, ${delegationEvents} delegations, found ${serviceKeys.size} service keys\n`);
+    
+    if (serviceKeys.size === 0) {
+      console.error('❌ No service keys found! Cannot sync attestations.');
+      console.error('   Make sure delegations (kind 10040) were synced in step 1.');
+      process.exit(1);
+    }
     
     // Step 3: Negentropy sync attestations for the service keys
     console.log('Step 3/4: Syncing attestations via negentropy for service keys...');
@@ -124,18 +150,27 @@ async function runBackfill() {
     });
     
     let attestations = 0;
+    let skippedOld = 0;
+    let totalExported = 0;
     
-    // Process attestations only
+    // Process attestations only, filtering by timestamp (past week)
     for await (const line of rl) {
       if (!line.trim()) continue;
       try {
         const event = JSON.parse(line);
         if (event.kind === 30382) {
-          await processor.handleRankingEvent(event);
-          attestations++;
-          if (attestations % 10000 === 0) {
-            console.log(`  Processed ${attestations} attestations`);
-        }
+          totalExported++;
+          
+          // Only process events from the past week
+          if (event.created_at >= ONE_WEEK_AGO) {
+            await processor.handleRankingEvent(event);
+            attestations++;
+            if (attestations % 1000 === 0) {
+              console.log(`  Processed ${attestations} recent attestations (skipped ${skippedOld} older ones)...`);
+            }
+          } else {
+            skippedOld++;
+          }
         }
       } catch (err) {
         // Skip parse errors
@@ -145,7 +180,9 @@ async function runBackfill() {
     await db.close();
     
     console.log(`\n✓ Backfill complete!`);
-    console.log(`  Attestations: ${attestations}`);
+    console.log(`  Total exported: ${totalExported}`);
+    console.log(`  Recent attestations (past week): ${attestations}`);
+    console.log(`  Skipped (older than 1 week): ${skippedOld}`);
     console.log(`\nYou can now run: npm start`);
     
   } catch (error) {

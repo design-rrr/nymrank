@@ -7,7 +7,7 @@
     "test": "test"
   },
   "scripts": {
-    "start": "node app.js",
+    "start": "node --expose-gc app.js",
     "refresh": "node app.js --fresh",
     "test": "tap \"test/**/*.test.js\""
   },
@@ -18,6 +18,7 @@
     "@fastify/autoload": "^6.0.0",
     "@fastify/sensible": "^6.0.0",
     "@fastify/static": "^8.3.0",
+    "@plausible-analytics/tracker": "^0.4.4",
     "fastify": "^5.0.0",
     "fastify-cli": "^7.4.0",
     "fastify-plugin": "^5.0.0",

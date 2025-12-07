@@ -150,7 +150,7 @@ server.get('/check-activity', async (request, reply) => {
     }
 
     // Query relays for activity (any event kind)
-    const activityRelayUrls = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.snort.social', 'wss://relay.primal.net'];
+    const activityRelayUrls = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net'];
     const { SimplePool, useWebSocketImplementation } = require('nostr-tools/pool');
     const WebSocket = require('ws');
     useWebSocketImplementation(WebSocket);
@@ -226,7 +226,7 @@ server.get('/check-activity', async (request, reply) => {
 // --- Start and Shutdown ---
 const start = async () => {
   try {
-    const port = process.env.PORT || 3000;
+    const port = process.env.PORT || 3333;
     await server.listen({ port })
   } catch (err) {
     server.log.error(err)
