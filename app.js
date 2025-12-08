@@ -25,7 +25,8 @@ const streams = pino.multistream([
 const server = fastify({
   logger: {
     level: 'info',
-    stream: streams
+    stream: streams,
+    disableRequestLogging: true
   },
   pluginTimeout: 30000
 })
@@ -61,6 +62,39 @@ server.addHook('onClose', (instance, done) => {
     }
     done();
   }).catch(done);
+});
+
+// Custom request logging - only log legitimate API queries, not health checks or static pages
+const routesToLog = ['/stats', '/check-activity', '/user/'];
+server.addHook('onRequest', async (request, reply) => {
+  const url = request.url.split('?')[0]; // Remove query params
+  const shouldLog = routesToLog.some(route => url.startsWith(route));
+  
+  if (shouldLog) {
+    request.log.info({
+      req: {
+        method: request.method,
+        url: request.url,
+        host: request.hostname,
+        remoteAddress: request.ip,
+        remotePort: request.socket.remotePort
+      }
+    }, 'incoming request');
+  }
+});
+
+server.addHook('onResponse', async (request, reply) => {
+  const url = request.url.split('?')[0];
+  const shouldLog = routesToLog.some(route => url.startsWith(route));
+  
+  if (shouldLog) {
+    request.log.info({
+      res: {
+        statusCode: reply.statusCode
+      },
+      responseTime: reply.getResponseTime()
+    }, 'request completed');
+  }
 });
 
 // --- Decorate server with database ---
