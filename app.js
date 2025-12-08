@@ -23,10 +23,10 @@ const streams = pino.multistream([
 ])
 
 const server = fastify({
+  disableRequestLogging: true,
   logger: {
     level: 'info',
-    stream: streams,
-    disableRequestLogging: true
+    stream: streams
   },
   pluginTimeout: 30000
 })
