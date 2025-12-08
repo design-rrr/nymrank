@@ -65,12 +65,16 @@ server.addHook('onClose', (instance, done) => {
 });
 
 // Custom request logging - only log legitimate API queries, not health checks or static pages
-const routesToLog = ['/stats', '/check-activity', '/user/'];
 server.addHook('onRequest', async (request, reply) => {
   const url = request.url.split('?')[0]; // Remove query params
-  const shouldLog = routesToLog.some(route => url.startsWith(route));
   
-  if (shouldLog) {
+  // Explicitly skip health checks and static pages
+  if (url === '/' || url === '/healthz' || url === '/log' || url === '/faq' || url.startsWith('/public/')) {
+    return; // Don't log these
+  }
+  
+  // Only log API endpoints
+  if (url === '/stats' || url === '/check-activity' || url.startsWith('/user/')) {
     request.log.info({
       req: {
         method: request.method,
@@ -85,9 +89,14 @@ server.addHook('onRequest', async (request, reply) => {
 
 server.addHook('onResponse', async (request, reply) => {
   const url = request.url.split('?')[0];
-  const shouldLog = routesToLog.some(route => url.startsWith(route));
   
-  if (shouldLog) {
+  // Explicitly skip health checks and static pages
+  if (url === '/' || url === '/healthz' || url === '/log' || url === '/faq' || url.startsWith('/public/')) {
+    return; // Don't log these
+  }
+  
+  // Only log API endpoints
+  if (url === '/stats' || url === '/check-activity' || url.startsWith('/user/')) {
     request.log.info({
       res: {
         statusCode: reply.statusCode
