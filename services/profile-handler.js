@@ -140,7 +140,7 @@ class ProfileHandler {
       });
       
       // Query for most recent activity events (see kinds list below) authored by these users (use different relays for activity)
-      const activityRelayUrls = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net'];
+      const activityRelayUrls = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.nostr.band'];
       
       // Use minimum since timestamp for the batch to only get events newer than last check
       const sinceTimestamps = Array.from(lastCheckMap.values()).filter(ts => ts > 0);

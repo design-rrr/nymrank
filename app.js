@@ -192,17 +192,17 @@ server.get('/check-activity', async (request, reply) => {
       hexPubkey = trimmed;
     }
 
-    // Query relays for activity (any event kind)
-    const activityRelayUrls = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net'];
+    // Query relays for activity (any event kind) and profile (kind 0)
+    const relayUrls = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.nostr.band'];
     const { SimplePool, useWebSocketImplementation } = require('nostr-tools/pool');
     const WebSocket = require('ws');
     useWebSocketImplementation(WebSocket);
     
     const pool = new SimplePool();
-    const activityFilter = { authors: [hexPubkey], limit: 100 };
     
-    const events = await pool.querySync(activityRelayUrls, activityFilter);
-    pool.close(activityRelayUrls);
+    // Fetch activity events (any kind)
+    const activityFilter = { authors: [hexPubkey], limit: 100 };
+    const events = await pool.querySync(relayUrls, activityFilter);
 
     // Find most recent event
     let latestEvent = null;
@@ -221,6 +221,29 @@ server.get('/check-activity', async (request, reply) => {
       // No activity found - still update last_activity_check timestamp
       await database.recordActivityCheck([hexPubkey], new Map());
     }
+
+    // Fetch and update profile (kind 0)
+    const profileFilter = { kinds: [0], authors: [hexPubkey] };
+    const profileEvents = await pool.querySync(relayUrls, profileFilter);
+    
+    if (profileEvents.length > 0) {
+      // Process profile events
+      const EventProcessor = require('./services/event-processor');
+      const eventProcessor = new EventProcessor(database, server.log);
+      await eventProcessor.processEvents(profileEvents, 0);
+      
+      // Update profile timestamp in profile_refresh_queue
+      const profileTimestamps = new Map();
+      profileEvents.forEach(event => {
+        const existing = profileTimestamps.get(event.pubkey);
+        if (!existing || event.created_at > existing) {
+          profileTimestamps.set(event.pubkey, event.created_at);
+        }
+      });
+      await database.recordProfileTimestamp([hexPubkey], profileTimestamps);
+    }
+    
+    pool.close(relayUrls);
 
     // Get profile info from DB (after update so we see the new values)
     const profileResult = await database.query(`
