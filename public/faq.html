@@ -103,9 +103,9 @@
             <td>The primary name field in your kind 0 profile</td>
           </tr>
           <tr>
-            <td><code>name</code> (starts with)</td>
+            <td><code>name</code> (starts with + space)</td>
             <td><strong>+1</strong></td>
-            <td>If your name starts with the slug (e.g., "jack" matches "jack smith")</td>
+            <td>If your name starts with the slug followed by a space (e.g., "jack" matches "jack smith", but NOT "jackson" or "ja")</td>
           </tr>
           <tr>
             <td><code>nip05</code> (exact match)</td>
@@ -149,9 +149,11 @@
       </div>
       
       <h3>How NymRank Handles This</h3>
-      <p>To mitigate this UX ambiguity, NymRank gives <strong>partial credit</strong> for names that start with your slug:</p>
+      <p>To mitigate this UX ambiguity, NymRank gives <strong>partial credit</strong> for names that start with your slug followed by a space:</p>
       <ul>
         <li>If your <code>name</code> is "jack smith" and someone searches "jack", you get +1 point (partial match)</li>
+        <li>If your <code>name</code> is "jackson" and someone searches "jack", you get 0 points (no match - requires space after "jack")</li>
+        <li>If your <code>name</code> is "jack" and someone searches "ja", you get 0 points (no match - "jack" doesn't occupy "ja")</li>
         <li>This is half the points of an exact match (+2), but combined with <code>nip05</code> or <code>lud16</code> matches, you can still occupy the name</li>
         <li>However, users with exact matches will rank higher if they have similar reputation</li>
       </ul>
