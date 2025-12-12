@@ -19,9 +19,17 @@ class Database {
         max: 20, // Maximum number of clients in the pool
         idleTimeoutMillis: 30000,
         connectionTimeoutMillis: 2000,
+        keepAlive: true,
+        keepAliveInitialDelayMillis: 10000,
       };
 
       this.pool = new Pool(config);
+      
+      // Handle pool errors - remove dead connections
+      this.pool.on('error', (err) => {
+        console.error('Unexpected error on idle database client', err);
+        // The pool will automatically remove the dead client
+      });
       
       // Test the connection
       const client = await this.pool.connect();
@@ -85,7 +93,7 @@ class Database {
     }
   }
 
-  async query(text, params) {
+  async query(text, params, retries = 2) {
     if (!this.isConnected || this.isShuttingDown) {
       return { rows: [], rowCount: 0 }; // Return empty result during shutdown
     }
@@ -97,6 +105,20 @@ class Database {
       if (this.isShuttingDown) {
         return { rows: [], rowCount: 0 }; // Suppress errors during shutdown
       }
+      
+      // Retry on connection errors (timeout, terminated, etc.)
+      const isConnectionError = error.message.includes('Connection terminated') ||
+                                error.message.includes('connection timeout') ||
+                                error.message.includes('Connection terminated unexpectedly') ||
+                                (error.cause && error.cause.message && error.cause.message.includes('Connection terminated'));
+      
+      if (isConnectionError && retries > 0) {
+        console.warn(`Database connection error, retrying (${retries} attempts left):`, error.message);
+        // Wait a bit before retrying to let the pool clean up dead connections
+        await new Promise(resolve => setTimeout(resolve, 100));
+        return this.query(text, params, retries - 1);
+      }
+      
       console.error('Database query error:', error);
       throw error;
     }
