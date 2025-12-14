@@ -17,7 +17,7 @@ class Database {
         user: process.env.DB_USER || 'nymrank_user',
         password: process.env.DB_PASSWORD || 'nymrank_password',
         max: 20, // Maximum number of clients in the pool
-        idleTimeoutMillis: 30000,
+        idleTimeoutMillis: 30000, // Close idle connections after 30s
         connectionTimeoutMillis: 2000,
         keepAlive: true,
         keepAliveInitialDelayMillis: 10000,
@@ -26,14 +26,69 @@ class Database {
       this.pool = new Pool(config);
       
       // Handle pool errors - remove dead connections
-      this.pool.on('error', (err) => {
-        console.error('Unexpected error on idle database client', err);
+      this.pool.on('error', (err, client) => {
+        console.error('[DB Pool] Error on client:', {
+          message: err.message,
+          code: err.code,
+          clientProcessId: client?.processID,
+          timestamp: new Date().toISOString()
+        });
         // The pool will automatically remove the dead client
       });
       
-      // Test the connection
+      // Track connection lifecycle for debugging
+      this.pool.on('connect', (client) => {
+        console.log('[DB Pool] New client connected:', {
+          processId: client.processID,
+          timestamp: new Date().toISOString(),
+          totalCount: this.pool.totalCount,
+          idleCount: this.pool.idleCount,
+          waitingCount: this.pool.waitingCount
+        });
+      });
+      
+      this.pool.on('remove', (client) => {
+        console.log('[DB Pool] Client removed:', {
+          processId: client?.processID,
+          timestamp: new Date().toISOString(),
+          totalCount: this.pool.totalCount,
+          idleCount: this.pool.idleCount
+        });
+      });
+      
+      // Test the connection and check database timeout settings
       const client = await this.pool.connect();
       await client.query('SELECT NOW()');
+      
+      // Check PostgreSQL timeout settings that might cause connection drops
+      const timeoutSettings = await client.query(`
+        SELECT name, setting, unit 
+        FROM pg_settings 
+        WHERE name IN (
+          'idle_in_transaction_session_timeout',
+          'statement_timeout',
+          'tcp_keepalives_idle',
+          'tcp_keepalives_interval',
+          'tcp_keepalives_count',
+          'max_connections'
+        )
+        ORDER BY name
+      `);
+      
+      console.log('[DB] PostgreSQL timeout settings:');
+      timeoutSettings.rows.forEach(row => {
+        const value = row.setting === '0' ? 'disabled' : `${row.setting}${row.unit || ''}`;
+        console.log(`  ${row.name}: ${value}`);
+      });
+      
+      // Check current connection count
+      const connCount = await client.query(`
+        SELECT count(*) as active_connections 
+        FROM pg_stat_activity 
+        WHERE datname = current_database()
+      `);
+      console.log(`[DB] Active connections to database: ${connCount.rows[0].active_connections}`);
+      
       client.release();
       
       this.isConnected = true;
@@ -51,35 +106,69 @@ class Database {
   }
   
   async setupRankingsRefreshListener() {
-    try {
-      const client = await this.pool.connect();
-      await client.query('LISTEN rankings_changed');
-      
-      let refreshPending = false;
-      let refreshTimeout = null;
-      
-      client.on('notification', async (msg) => {
-        if (msg.channel === 'rankings_changed' && !refreshPending) {
-          // Debounce: wait 5 seconds after last change before refreshing
-          refreshPending = true;
-          if (refreshTimeout) clearTimeout(refreshTimeout);
-          refreshTimeout = setTimeout(async () => {
-            try {
-              console.log('[DB] Refreshing precomputed_rankings materialized view...');
-              await this.pool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY precomputed_rankings');
-              console.log('[DB] Materialized view refreshed successfully');
-            } catch (err) {
-              console.error('[DB] Failed to refresh materialized view:', err.message);
+    const setupListener = async () => {
+      try {
+        const client = await this.pool.connect();
+        await client.query('LISTEN rankings_changed');
+        
+        let refreshPending = false;
+        let refreshTimeout = null;
+        
+        const handleNotification = async (msg) => {
+          if (msg.channel === 'rankings_changed' && !refreshPending) {
+            // Debounce: wait 5 seconds after last change before refreshing
+            refreshPending = true;
+            if (refreshTimeout) clearTimeout(refreshTimeout);
+            refreshTimeout = setTimeout(async () => {
+              try {
+                console.log('[DB] Refreshing precomputed_rankings materialized view...');
+                await this.pool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY precomputed_rankings');
+                console.log('[DB] Materialized view refreshed successfully');
+              } catch (err) {
+                console.error('[DB] Failed to refresh materialized view:', err.message);
+              }
+              refreshPending = false;
+            }, 5000);
+          }
+        };
+        
+        client.on('notification', handleNotification);
+        
+        // Handle connection errors and reconnect
+        client.on('error', async (err) => {
+          console.error('[DB] LISTEN connection error:', err.message);
+          client.removeAllListeners();
+          try {
+            client.release();
+          } catch (e) {
+            // Ignore release errors
+          }
+          // Reconnect after a delay
+          if (!this.isShuttingDown) {
+            setTimeout(() => {
+              if (!this.isShuttingDown) {
+                console.log('[DB] Reconnecting LISTEN client...');
+                setupListener();
+              }
+            }, 5000);
+          }
+        });
+        
+        console.log('[DB] Listening for rankings_changed notifications');
+      } catch (error) {
+        console.error('[DB] Failed to setup rankings refresh listener:', error.message);
+        // Retry after delay if not shutting down
+        if (!this.isShuttingDown) {
+          setTimeout(() => {
+            if (!this.isShuttingDown) {
+              setupListener();
             }
-            refreshPending = false;
-          }, 5000);
+          }, 10000);
         }
-      });
-      
-      console.log('[DB] Listening for rankings_changed notifications');
-    } catch (error) {
-      console.error('[DB] Failed to setup rankings refresh listener:', error.message);
-    }
+      }
+    };
+    
+    await setupListener();
   }
   
   async refreshRankings() {
@@ -98,6 +187,7 @@ class Database {
       return { rows: [], rowCount: 0 }; // Return empty result during shutdown
     }
     
+    // Try pool.query first (fast path)
     try {
       const result = await this.pool.query(text, params);
       return result;
@@ -106,24 +196,66 @@ class Database {
         return { rows: [], rowCount: 0 }; // Suppress errors during shutdown
       }
       
-      // Retry on connection errors (timeout, terminated, etc.)
+      // Check if this is a connection error
       const isConnectionError = error.message.includes('Connection terminated') ||
                                 error.message.includes('connection timeout') ||
                                 error.message.includes('Connection terminated unexpectedly') ||
-                                (error.cause && error.cause.message && error.cause.message.includes('Connection terminated'));
+                                error.message.includes('Client has encountered a connection error') ||
+                                (error.cause && error.cause.message && (
+                                  error.cause.message.includes('Connection terminated') ||
+                                  error.cause.message.includes('ECONNRESET') ||
+                                  error.cause.message.includes('EPIPE')
+                                ));
       
-      if (isConnectionError && retries > 0) {
-        console.warn(`Database connection error, retrying (${retries} attempts left):`, error.message);
-        // Wait a bit before retrying to let the pool clean up dead connections
-        await new Promise(resolve => setTimeout(resolve, 100));
-        return this.query(text, params, retries - 1);
+      // Log connection state when connection errors occur
+      if (isConnectionError) {
+        console.warn('[DB Connection Error] Pool state:', {
+          totalCount: this.pool.totalCount,
+          idleCount: this.pool.idleCount,
+          waitingCount: this.pool.waitingCount,
+          error: error.message,
+          errorCode: error.code,
+          cause: error.cause?.message,
+          timestamp: new Date().toISOString()
+        });
       }
       
+      // For connection errors, get a fresh client explicitly to force pool to create new connection
+      if (isConnectionError && retries > 0) {
+        const attemptsLeft = retries - 1;
+        console.warn(`Database connection error, getting fresh client (${attemptsLeft} attempts left):`, error.message);
+        
+        // Wait a bit to let pool clean up the dead connection
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        try {
+          // Get a fresh client explicitly - this forces pool to create new connection if needed
+          const client = await this.pool.connect();
+          try {
+            const result = await client.query(text, params);
+            if (attemptsLeft < retries) {
+              console.log(`Database connection recovered successfully after ${retries - attemptsLeft} retry(ies)`);
+            }
+            return result;
+          } finally {
+            client.release(); // Always release the client
+          }
+        } catch (retryError) {
+          // If getting a fresh client also fails, retry recursively
+          if (attemptsLeft > 0) {
+            return this.query(text, params, attemptsLeft);
+          }
+          // Out of retries, throw the original error
+          throw error;
+        }
+      }
+      
+      // For non-connection errors or out of retries, throw
       console.error('Database query error:', error);
       throw error;
     }
   }
-
+  
   async ensureAttestationEventsTable() {
     if (!this.isConnected) {
       throw new Error('Database not connected');

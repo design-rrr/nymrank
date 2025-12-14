@@ -12,6 +12,9 @@ class RelayListener {
     this.delegationHandler = new DelegationHandler(relayUrls, database, log);
     this.rankingHandler = new RankingHandler(relayUrls, database, log);
     this.profileHandler = new ProfileHandler(profileRelayUrls, database, log);
+    
+    this.profileCheckInterval = null;
+    this.rankedPubkeys = [];
   }
 
   async start() {
@@ -37,8 +40,18 @@ class RelayListener {
       
       this.log.info(`Found ${rankedPubkeys.length} ranked users in database`);
       
+      // Store for periodic checks
+      this.rankedPubkeys = rankedPubkeys;
+      
       if (rankedPubkeys.length > 0) {
+        // Run initial profile/activity check
         await this.subscribeToProfiles(rankedPubkeys);
+        
+        // Schedule periodic profile/activity checks (every 6 hours)
+        // This ensures:
+        // - Profile refreshes happen within 1 day (checked every 6h)
+        // - Activity checks happen within 7 days (checked every 6h)
+        this.startPeriodicProfileChecks();
       } else {
         this.log.warn('No ranked users found - run backfill first');
       }
@@ -53,7 +66,32 @@ class RelayListener {
     await this.profileHandler.fetchAndProcessProfiles(pubkeys);
   }
 
+  startPeriodicProfileChecks() {
+    // Run profile/activity checks every 6 hours
+    // fetchAndProcessProfiles internally checks timestamps:
+    // - Profiles: refreshes if last_profile_fetch > 1 day old
+    // - Activity: checks if last_activity_check is NULL or > 7 days old
+    const INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
+    
+    this.log.info(`Starting periodic profile/activity checks (every ${INTERVAL_MS / 1000 / 60} minutes)`);
+    
+    this.profileCheckInterval = setInterval(async () => {
+      try {
+        this.log.info('[Periodic Check] Running profile/activity refresh...');
+        await this.subscribeToProfiles(this.rankedPubkeys);
+        this.log.info('[Periodic Check] Profile/activity refresh complete');
+      } catch (error) {
+        this.log.error('[Periodic Check] Error during profile/activity refresh:', error);
+      }
+    }, INTERVAL_MS);
+  }
+
   close() {
+    // Stop periodic checks
+    if (this.profileCheckInterval) {
+      clearInterval(this.profileCheckInterval);
+      this.profileCheckInterval = null;
+    }
     this.delegationHandler.close();
     this.rankingHandler.close();
     this.profileHandler.close();
