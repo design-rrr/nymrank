@@ -17,10 +17,10 @@ class Database {
         user: process.env.DB_USER || 'nymrank_user',
         password: process.env.DB_PASSWORD || 'nymrank_password',
         max: 20, // Maximum number of clients in the pool
-        idleTimeoutMillis: 30000, // Close idle connections after 30s
+        idleTimeoutMillis: 300000, // Close idle connections after 5 minutes (longer than keepalive delay)
         connectionTimeoutMillis: 2000,
         keepAlive: true,
-        keepAliveInitialDelayMillis: 10000,
+        keepAliveInitialDelayMillis: 10000, // Start keepalive probes after 10s of idle
       };
 
       this.pool = new Pool(config);
