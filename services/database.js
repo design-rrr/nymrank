@@ -76,11 +76,15 @@ class Database {
           ORDER BY name
         `);
         
-        console.log('[DB] PostgreSQL timeout settings:');
-        timeoutSettings.rows.forEach(row => {
-          const value = row.setting === '0' ? 'disabled' : `${row.setting}${row.unit || ''}`;
-          console.log(`  ${row.name}: ${value}`);
-        });
+        console.log('[DB] ===== PostgreSQL Timeout Settings =====');
+        if (timeoutSettings.rows.length === 0) {
+          console.log('[DB] WARNING: No timeout settings found!');
+        } else {
+          timeoutSettings.rows.forEach(row => {
+            const value = row.setting === '0' ? 'disabled' : `${row.setting}${row.unit || ''}`;
+            console.log(`[DB]   ${row.name}: ${value}`);
+          });
+        }
         
         // Check current connection count
         const connCount = await client.query(`
@@ -89,8 +93,10 @@ class Database {
           WHERE datname = current_database()
         `);
         console.log(`[DB] Active connections to database: ${connCount.rows[0].active_connections}`);
+        console.log('[DB] =========================================');
       } catch (diagError) {
-        console.warn('[DB] Failed to fetch timeout diagnostics:', diagError.message);
+        console.error('[DB] ERROR: Failed to fetch timeout diagnostics:', diagError.message);
+        console.error('[DB] Error stack:', diagError.stack);
       }
       
       client.release();
