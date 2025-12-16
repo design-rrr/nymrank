@@ -61,33 +61,37 @@ class Database {
       await client.query('SELECT NOW()');
       
       // Check PostgreSQL timeout settings that might cause connection drops
-      const timeoutSettings = await client.query(`
-        SELECT name, setting, unit 
-        FROM pg_settings 
-        WHERE name IN (
-          'idle_in_transaction_session_timeout',
-          'statement_timeout',
-          'tcp_keepalives_idle',
-          'tcp_keepalives_interval',
-          'tcp_keepalives_count',
-          'max_connections'
-        )
-        ORDER BY name
-      `);
-      
-      console.log('[DB] PostgreSQL timeout settings:');
-      timeoutSettings.rows.forEach(row => {
-        const value = row.setting === '0' ? 'disabled' : `${row.setting}${row.unit || ''}`;
-        console.log(`  ${row.name}: ${value}`);
-      });
-      
-      // Check current connection count
-      const connCount = await client.query(`
-        SELECT count(*) as active_connections 
-        FROM pg_stat_activity 
-        WHERE datname = current_database()
-      `);
-      console.log(`[DB] Active connections to database: ${connCount.rows[0].active_connections}`);
+      try {
+        const timeoutSettings = await client.query(`
+          SELECT name, setting, unit 
+          FROM pg_settings 
+          WHERE name IN (
+            'idle_in_transaction_session_timeout',
+            'statement_timeout',
+            'tcp_keepalives_idle',
+            'tcp_keepalives_interval',
+            'tcp_keepalives_count',
+            'max_connections'
+          )
+          ORDER BY name
+        `);
+        
+        console.log('[DB] PostgreSQL timeout settings:');
+        timeoutSettings.rows.forEach(row => {
+          const value = row.setting === '0' ? 'disabled' : `${row.setting}${row.unit || ''}`;
+          console.log(`  ${row.name}: ${value}`);
+        });
+        
+        // Check current connection count
+        const connCount = await client.query(`
+          SELECT count(*) as active_connections 
+          FROM pg_stat_activity 
+          WHERE datname = current_database()
+        `);
+        console.log(`[DB] Active connections to database: ${connCount.rows[0].active_connections}`);
+      } catch (diagError) {
+        console.warn('[DB] Failed to fetch timeout diagnostics:', diagError.message);
+      }
       
       client.release();
       
