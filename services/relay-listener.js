@@ -75,14 +75,19 @@ class RelayListener {
     
     this.log.info(`Starting periodic profile/activity checks (every ${INTERVAL_MS / 1000 / 60} minutes)`);
     
-    this.profileCheckInterval = setInterval(async () => {
-      try {
-        this.log.info('[Periodic Check] Running profile/activity refresh...');
-        await this.subscribeToProfiles(this.rankedPubkeys);
-        this.log.info('[Periodic Check] Profile/activity refresh complete');
-      } catch (error) {
-        this.log.error('[Periodic Check] Error during profile/activity refresh:', error);
-      }
+    const runCheck = () => {
+      this.subscribeToProfiles(this.rankedPubkeys)
+        .then(() => {
+          this.log.info('[Periodic Check] Profile/activity refresh complete');
+        })
+        .catch((error) => {
+          this.log.error('[Periodic Check] Error during profile/activity refresh:', error);
+        });
+    };
+    
+    this.profileCheckInterval = setInterval(() => {
+      this.log.info('[Periodic Check] Running profile/activity refresh...');
+      runCheck();
     }, INTERVAL_MS);
   }
 

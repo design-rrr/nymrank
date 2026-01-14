@@ -5,6 +5,8 @@ class Database {
     this.pool = null;
     this.isConnected = false;
     this.isShuttingDown = false;
+    this.listenClient = null;
+    this.listenKeepAliveInterval = null;
   }
 
   async connect() {
@@ -144,10 +146,33 @@ class Database {
         
         client.on('notification', handleNotification);
         
+        // Store reference to prevent garbage collection
+        this.listenClient = client;
+        
+        // Send periodic keepalive queries to prevent PostgreSQL from dropping the connection
+        // PostgreSQL may have idle_in_transaction_session_timeout that can drop LISTEN connections
+        this.listenKeepAliveInterval = setInterval(() => {
+          if (this.isShuttingDown || !this.listenClient) {
+            if (this.listenKeepAliveInterval) {
+              clearInterval(this.listenKeepAliveInterval);
+              this.listenKeepAliveInterval = null;
+            }
+            return;
+          }
+          client.query('SELECT 1').catch((err) => {
+            console.error('[DB] LISTEN keepalive query failed:', err.message);
+          });
+        }, 1 * 60 * 1000); // Every minute (before 5 minute idle timeout)
+        
         // Handle connection errors and reconnect
         client.on('error', async (err) => {
           console.error('[DB] LISTEN connection error:', err.message);
           client.removeAllListeners();
+          this.listenClient = null;
+          if (this.listenKeepAliveInterval) {
+            clearInterval(this.listenKeepAliveInterval);
+            this.listenKeepAliveInterval = null;
+          }
           try {
             client.release();
           } catch (e) {
@@ -365,6 +390,19 @@ class Database {
 
   async disconnect() {
     this.isShuttingDown = true;
+    if (this.listenKeepAliveInterval) {
+      clearInterval(this.listenKeepAliveInterval);
+      this.listenKeepAliveInterval = null;
+    }
+    if (this.listenClient) {
+      try {
+        this.listenClient.removeAllListeners();
+        this.listenClient.release();
+      } catch (e) {
+        // Ignore errors
+      }
+      this.listenClient = null;
+    }
     if (this.pool) {
       await this.pool.end();
       this.isConnected = false;
@@ -387,6 +425,20 @@ class Database {
   }
 
   async close() {
+    this.isShuttingDown = true;
+    if (this.listenKeepAliveInterval) {
+      clearInterval(this.listenKeepAliveInterval);
+      this.listenKeepAliveInterval = null;
+    }
+    if (this.listenClient) {
+      try {
+        this.listenClient.removeAllListeners();
+        this.listenClient.release();
+      } catch (e) {
+        // Ignore errors
+      }
+      this.listenClient = null;
+    }
     if (this.pool) {
       await this.pool.end();
       this.isConnected = false;
