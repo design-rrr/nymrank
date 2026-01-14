@@ -50,12 +50,17 @@ class Database {
       });
       
       this.pool.on('remove', (client) => {
+        const isListenClient = this.listenClient && this.listenClient.processID === client?.processID;
         console.log('[DB Pool] Client removed:', {
           processId: client?.processID,
           timestamp: new Date().toISOString(),
           totalCount: this.pool.totalCount,
-          idleCount: this.pool.idleCount
+          idleCount: this.pool.idleCount,
+          isListenClient: isListenClient
         });
+        if (isListenClient) {
+          console.error('[DB Pool] WARNING: LISTEN client was removed! This should not happen.');
+        }
       });
       
       // Test the connection and check database timeout settings
@@ -151,6 +156,7 @@ class Database {
         
         // Send periodic keepalive queries to prevent PostgreSQL from dropping the connection
         // PostgreSQL may have idle_in_transaction_session_timeout that can drop LISTEN connections
+        console.log('[DB] Starting LISTEN keepalive (every 4 minutes)');
         this.listenKeepAliveInterval = setInterval(() => {
           if (this.isShuttingDown || !this.listenClient) {
             if (this.listenKeepAliveInterval) {
@@ -159,10 +165,15 @@ class Database {
             }
             return;
           }
-          client.query('SELECT 1').catch((err) => {
-            console.error('[DB] LISTEN keepalive query failed:', err.message);
-          });
-        }, 1 * 60 * 1000); // Every minute (before 5 minute idle timeout)
+          // Use this.listenClient to ensure we're using the current client
+          this.listenClient.query('SELECT 1')
+            .then(() => {
+              // Keepalive successful - connection is alive
+            })
+            .catch((err) => {
+              console.error('[DB] LISTEN keepalive query failed:', err.message);
+            });
+        }, 4 * 60 * 1000); // Every 4 minutes (before 5 minute idle timeout)
         
         // Handle connection errors and reconnect
         client.on('error', async (err) => {
