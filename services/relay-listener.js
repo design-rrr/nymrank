@@ -14,6 +14,7 @@ class RelayListener {
     this.profileHandler = new ProfileHandler(profileRelayUrls, database, log);
     
     this.profileCheckInterval = null;
+    this.profileCheckRunning = false;
     this.rankedPubkeys = [];
   }
 
@@ -67,7 +68,7 @@ class RelayListener {
   }
 
   startPeriodicProfileChecks() {
-    // Run profile/activity checks every 6 hours
+    // Run profile/activity checks every 6 hours (fallback)
     // fetchAndProcessProfiles internally checks timestamps:
     // - Profiles: refreshes if last_profile_fetch > 1 day old
     // - Activity: checks if last_activity_check is NULL or > 7 days old
@@ -75,20 +76,45 @@ class RelayListener {
     
     this.log.info(`Starting periodic profile/activity checks (every ${INTERVAL_MS / 1000 / 60} minutes)`);
     
+    // Run check and schedule next one immediately after completion
+    // This ensures we keep checking until no more work is needed
     const runCheck = () => {
+      if (this.profileCheckRunning) {
+        return; // Already running, skip
+      }
+      this.profileCheckRunning = true;
+      this.log.info('[Periodic Check] Running profile/activity refresh...');
       this.subscribeToProfiles(this.rankedPubkeys)
         .then(() => {
           this.log.info('[Periodic Check] Profile/activity refresh complete');
+          this.profileCheckRunning = false;
+          // Schedule next check immediately (with small delay to avoid tight loops)
+          // fetchAndProcessProfiles will skip if nothing is due
+          setTimeout(() => {
+            if (this.profileCheckInterval) {
+              runCheck();
+            }
+          }, 60000); // 1 minute delay before re-checking
         })
         .catch((error) => {
           this.log.error('[Periodic Check] Error during profile/activity refresh:', error);
+          this.profileCheckRunning = false;
+          // On error, wait longer before retry
+          setTimeout(() => {
+            if (this.profileCheckInterval) {
+              runCheck();
+            }
+          }, INTERVAL_MS);
         });
     };
     
+    // Set interval as fallback to ensure it runs even if something goes wrong
     this.profileCheckInterval = setInterval(() => {
-      this.log.info('[Periodic Check] Running profile/activity refresh...');
       runCheck();
     }, INTERVAL_MS);
+    
+    // Start the first check immediately
+    runCheck();
   }
 
   close() {
