@@ -3,8 +3,10 @@
 const fastify = require('fastify')
 const pino = require('pino')
 const stream = require('stream')
+const path = require('path');
 const Database = require('./services/database');
 const RelayListener = require('./services/relay-listener');
+const { getRelayConfig } = require('./services/config');
 
 // --- In-memory logger setup ---
 const logBuffer = []
@@ -33,9 +35,13 @@ const server = fastify({
 
 // --- Services ---
 const database = new Database();
-const relayUrls = ['ws://localhost:7777'];
-const profileRelayUrls = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.snort.social', 'wss://relay.primal.net', 'wss://relay.nostr.band', 'wss://nostrue.com'];
-const relayListener = new RelayListener(relayUrls, profileRelayUrls, database, server.log);
+const relayConfig = getRelayConfig();
+const relayListener = new RelayListener(
+  relayConfig.rankingRelayUrls,
+  relayConfig.socialRelayUrls,
+  database,
+  server.log
+);
 
 // --- Hooks ---
 server.addHook('onReady', async () => {
@@ -103,12 +109,17 @@ server.decorate('database', database);
 
 // --- Register static file serving ---
 server.register(require('@fastify/static'), {
-  root: require('path').join(__dirname, 'public'),
+  root: path.join(__dirname, 'public'),
   prefix: '/public/',
 });
 
 // --- Register routes ---
 server.register(require('./routes/web'));
+server.register(require('./routes/api'));
+
+server.get('/api-docs', async (request, reply) => {
+  return reply.sendFile('api-docs.html');
+});
 
 // --- Routes ---
 let statsCache = { data: null, expires: 0 };
@@ -193,7 +204,7 @@ server.get('/check-activity', async (request, reply) => {
     }
 
     // Query relays for activity (any event kind) and profile (kind 0)
-    const relayUrls = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.nostr.band', 'wss://nostr-pub.wellorder.net', `wss://nostr.bitcoiner.social`, 'wss://nostr.land'];
+    const relayUrls = relayConfig.socialRelayUrls;
     const { SimplePool, useWebSocketImplementation } = require('nostr-tools/pool');
     const WebSocket = require('ws');
     useWebSocketImplementation(WebSocket);

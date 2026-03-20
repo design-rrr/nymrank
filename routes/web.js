@@ -434,6 +434,7 @@ module.exports = async function (fastify, opts) {
         <strong style="color: #4CAF50;">Want to occupy a name?</strong>
         <span style="color: #ccc; margin-left: 8px;">Learn how to optimize your profile →</span>
       </div>
+      <a href="/api-docs" style="padding: 8px 16px; background: #2a2a2a; color: #4CAF50; text-decoration: none; border: 1px solid #4CAF50; border-radius: 6px; font-weight: 600; white-space: nowrap;">API Docs</a>
       <a href="/faq" style="padding: 8px 16px; background: #4CAF50; color: #000; text-decoration: none; border-radius: 6px; font-weight: 600; white-space: nowrap;">FAQ</a>
     </div>
     

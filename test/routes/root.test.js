@@ -2,15 +2,24 @@
 
 const { test } = require('node:test')
 const assert = require('node:assert')
-const { build } = require('../helper')
+const Fastify = require('fastify')
+const path = require('node:path')
 
 test('default root route', async (t) => {
-  const app = await build(t)
+  const app = Fastify()
+  app.register(require('@fastify/static'), {
+    root: path.join(__dirname, '..', '..', 'public'),
+    prefix: '/public/'
+  })
+  app.get('/api-docs', async (request, reply) => reply.sendFile('api-docs.html'))
+  await app.ready()
+  t.after(() => app.close())
 
   const res = await app.inject({
-    url: '/'
+    url: '/api-docs'
   })
-  assert.deepStrictEqual(JSON.parse(res.payload), { root: true })
+  assert.equal(res.statusCode, 200)
+  assert.match(res.payload, /NymRank API/)
 })
 
 // inject callback style:

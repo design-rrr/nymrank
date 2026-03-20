@@ -2,15 +2,22 @@
 
 const { test } = require('node:test')
 const assert = require('node:assert')
-const { build } = require('../helper')
+const Fastify = require('fastify')
+const apiRoutes = require('../../routes/api')
 
 test('example is loaded', async (t) => {
-  const app = await build(t)
+  const app = Fastify()
+  app.decorate('database', {
+    query: async () => ({ rows: [{ '?column?': 1 }] })
+  })
+  app.register(apiRoutes)
+  await app.ready()
+  t.after(() => app.close())
 
   const res = await app.inject({
-    url: '/example'
+    url: '/api/status'
   })
-  assert.equal(res.payload, 'this is an example')
+  assert.ok([200, 503].includes(res.statusCode))
 })
 
 // inject callback style:

@@ -70,7 +70,7 @@ npm run dev
 The app will:
 1. Fetch profiles (kind 0) for all ranked users (daily refresh)
 2. Check for activity to update LastSeen display (7-day refresh)
-3. Start the web UI on http://localhost:3000
+3. Start the web UI on http://localhost:3333
 
 ## Features
 
@@ -109,6 +109,11 @@ The app will:
 
 - `GET /` - Main search/browse UI
 - `GET /faq` - FAQ page (served from `/public/faq.html`)
+- `GET /api-docs` - Interactive API page (form inputs + live JSON responses)
+- `GET /api/status` - API health/readiness
+- `GET /api/names/:name` - Resolve name occupancy (`pubkey`, `average_rank`, `name_affinity`)
+- `GET /api/names/:name/suggestions` - Groq-generated available name suggestions (up to 5, name-only input)
+- `GET /api/users/:pubkey/rank` - Averaged user rank and committee breakdown
 - `GET /check-activity?pubkey=<hex|npub>` - Check activity for a specific user
 - `GET /healthz` - Health check
 - `GET /logs` - Recent server logs
@@ -121,16 +126,76 @@ The app will:
 - `DB_NAME`: Database name (default: nymrank)
 - `DB_USER`: Database user (default: nymrank_user)
 - `DB_PASSWORD`: Database password (default: nymrank_password)
+- `GROQ_API_KEY`: Required for `/api/names/:name/suggestions`
+- `GROQ_MODEL`: Optional Groq model override (default: `llama-3.1-70b-versatile`)
+- `RANKING_RELAY_URLS`: Comma-separated relay list for ranking/delegation (default: `wss://nip85.brainstorm.world`)
+- `SOCIAL_RELAY_URLS`: Comma-separated relay list shared by profile fetching and activity checks
+
+Copy `.env.example` to `.env` and set secrets locally:
+
+```bash
+cp .env.example .env
+```
 
 ## Relay Configuration
 
 ### Ranking Relay
-- `ws://localhost:7777` (local strfry for rankings/attestations)
+- `wss://nip85.brainstorm.world`
 
 ### Profile/Activity Relays
 - `wss://relay.damus.io`
 - `wss://nos.lol`
 - `wss://relay.primal.net`
+
+## API Response Examples
+
+### `GET /api/names/alice`
+
+```json
+{
+  "name": "alice",
+  "available": false,
+  "occupant": {
+    "pubkey": "abc123...",
+    "average_rank": 86,
+    "name_affinity": 3,
+    "profile": {
+      "name": "alice",
+      "nip05": "alice",
+      "lud16": "alice"
+    }
+  }
+}
+```
+
+### `GET /api/names/alice/suggestions`
+
+```json
+{
+  "name": "alice",
+  "suggestions": ["alicehq", "alice_btc", "realalice", "aliceapp", "alicex"]
+}
+```
+
+### `GET /api/users/<pubkey>/rank`
+
+```json
+{
+  "pubkey": "abc123...",
+  "average_rank": 82,
+  "average_influence_score": 0.74,
+  "average_hops": 2,
+  "average_follower_count": 318,
+  "perspective_count": 3,
+  "profile": {
+    "name": "alice",
+    "nip05": "alice",
+    "lud16": "alice",
+    "name_affinity": 4
+  },
+  "committee_breakdown": []
+}
+```
 
 ## Maintenance
 

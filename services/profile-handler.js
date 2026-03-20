@@ -1,5 +1,6 @@
 const EventFetcher = require('./event-fetcher');
 const EventProcessor = require('./event-processor');
+const { getRelayConfig } = require('./config');
 
 const KIND_PROFILE = 0;
 
@@ -9,6 +10,7 @@ class ProfileHandler {
     this.eventProcessor = new EventProcessor(database, log);
     this.database = database;
     this.log = log || console;
+    this.activityRelayUrls = getRelayConfig().socialRelayUrls;
     this.isStopping = false;
   }
 
@@ -140,7 +142,7 @@ class ProfileHandler {
       });
       
       // Query for most recent activity events (see kinds list below) authored by these users (use different relays for activity)
-      const activityRelayUrls = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.nostr.band'];
+      const activityRelayUrls = this.activityRelayUrls;
       
       // Use minimum since timestamp for the batch to only get events newer than last check
       const sinceTimestamps = Array.from(lastCheckMap.values()).filter(ts => ts > 0);
