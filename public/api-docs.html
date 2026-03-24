@@ -7,21 +7,38 @@
   <link rel="icon" type="image/png" href="/public/nymrank_sm.png">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0a; color: #e0e0e0; padding: 20px; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0a; color: #e0e0e0; padding: 20px; line-height: 1.5; }
     .container { max-width: 960px; margin: 0 auto; }
     .top-nav { display: flex; gap: 10px; margin-bottom: 20px; }
     .nav-link { display: inline-block; padding: 8px 14px; border-radius: 6px; text-decoration: none; font-weight: 600; }
     .nav-link.back { background: #2a2a2a; color: #4CAF50; border: 1px solid #4CAF50; }
     .nav-link.faq { background: #4CAF50; color: #000; }
     h1 { margin-bottom: 8px; color: #fff; }
-    p { color: #888; margin-bottom: 18px; }
-    .card { background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 16px; margin: 16px 0; }
+    .lead { color: #888; margin-bottom: 20px; }
+    .card { background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 16px; margin: 16px 0; scroll-margin-top: 16px; }
+    .card h2 { margin-bottom: 12px; }
+    .doc p, .doc li { color: #b0b0b0; font-size: 14px; margin: 8px 0; }
+    .doc ul { margin: 8px 0 8px 1.25em; }
+    .doc strong { color: #ddd; }
+    table.doc-table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 10px 0; }
+    .doc-table th, .doc-table td { border: 1px solid #333; padding: 8px 10px; text-align: left; vertical-align: top; }
+    .doc-table th { background: #141414; color: #9a9a9a; font-weight: 600; }
+    .doc-table code { font-size: 12px; }
+    pre.schema { background: #111; border: 1px solid #333; border-radius: 6px; padding: 12px; overflow: auto; color: #cfcfcf; font-size: 12px; margin: 10px 0; }
+    .try-panel { border-top: 1px solid #2a2a2a; margin-top: 14px; padding-top: 14px; }
+    .try-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: #666; margin-bottom: 10px; }
     .row { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
     input { background: #111; color: #e0e0e0; border: 1px solid #333; border-radius: 6px; padding: 10px; min-width: 240px; }
     button { background: #4CAF50; color: #000; border: none; border-radius: 6px; padding: 10px 14px; font-weight: 600; cursor: pointer; }
     button:hover { opacity: 0.95; }
-    pre { background: #111; border: 1px solid #333; border-radius: 6px; padding: 12px; overflow: auto; color: #cfcfcf; }
-    .endpoint { color: #4CAF50; font-family: 'Monaco', 'Courier New', monospace; }
+    pre.result { background: #111; border: 1px solid #333; border-radius: 6px; padding: 12px; overflow: auto; color: #cfcfcf; font-size: 12px; }
+    .endpoint { color: #4CAF50; font-family: 'Monaco', 'Courier New', monospace; font-size: 1rem; }
+    .toc { background: #141414; border: 1px solid #2a2a2a; border-radius: 8px; padding: 14px 18px; margin: 20px 0; }
+    .toc h2 { font-size: 14px; color: #888; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 10px; }
+    .toc ol { margin-left: 1.25em; color: #aaa; }
+    .toc a { color: #7ccc7c; text-decoration: none; }
+    .toc a:hover { text-decoration: underline; }
+    code { font-family: Monaco, 'Courier New', monospace; font-size: 0.92em; color: #9cdcfe; }
   </style>
 </head>
 <body>
@@ -31,33 +48,133 @@
       <a class="nav-link faq" href="/faq">FAQ</a>
     </div>
     <h1>NymRank API</h1>
-    <p>Interactive docs for hackathon integration testing.</p>
+    <p class="lead">JSON over HTTP. Below: reference for each route, then a live request panel. Base path is this host (e.g. <code>/api/status</code>).</p>
 
-    <div class="card">
-      <h2 class="endpoint">GET /api/names/:name</h2>
-      <div class="row">
-        <input id="nameLookup" value="alice" placeholder="name">
-        <button onclick="runNameLookup()">Run</button>
+    <nav class="toc" aria-label="On this page">
+      <h2>Contents</h2>
+      <ol>
+        <li><a href="#overview">Conventions &amp; errors</a></li>
+        <li><a href="#api-status"><code>GET /api/status</code></a></li>
+        <li><a href="#api-names"><code>GET /api/names/:name</code></a></li>
+        <li><a href="#api-users-rank"><code>GET /api/users/:pubkey/rank</code></a></li>
+        <li><a href="#api-users-activity"><code>GET /api/users/:pubkey/activity</code></a></li>
+      </ol>
+    </nav>
+
+    <section class="card" id="overview">
+      <h2 class="endpoint">Conventions</h2>
+      <div class="doc">
+        <p><strong>Format.</strong> Responses use <code>application/json</code>. Successful bodies are plain objects (no <code>data</code> wrapper).</p>
+        <p><strong>Errors.</strong> Failed requests return an object <code>{ "error": { "code": "&lt;string&gt;", "message": "&lt;string&gt;" } }</code> with an appropriate HTTP status (400, 404, 500, 503, etc.).</p>
+        <p><strong>Pubkey parameters.</strong> Path segments named <code>:pubkey</code> accept either a 64-character lowercase hex pubkey or an <code>npub1…</code> bech32 string (URL-encoded when used in a path).</p>
       </div>
-      <pre id="nameLookupResult">{}</pre>
-    </div>
+    </section>
 
-    <div class="card">
-      <h2 class="endpoint">GET /api/users/:pubkey/rank</h2>
-      <div class="row">
-        <input id="pubkeyLookup" placeholder="hex pubkey or npub">
-        <button onclick="runUserRank()">Run</button>
-      </div>
-      <pre id="pubkeyLookupResult">{}</pre>
-    </div>
-
-    <div class="card">
+    <section class="card" id="api-status">
       <h2 class="endpoint">GET /api/status</h2>
-      <div class="row">
-        <button onclick="runStatus()">Run</button>
+      <div class="doc">
+        <p>Lightweight readiness check: runs <code>SELECT 1</code> against PostgreSQL and returns process uptime.</p>
+        <table class="doc-table">
+          <thead><tr><th>Status</th><th>Body</th></tr></thead>
+          <tbody>
+            <tr><td><code>200</code></td><td><code>ok</code>, <code>service</code> (<code>nymrank-api</code>), <code>uptime_seconds</code></td></tr>
+            <tr><td><code>503</code></td><td><code>db_unavailable</code> — database not reachable</td></tr>
+          </tbody>
+        </table>
       </div>
-      <pre id="statusResult">{}</pre>
-    </div>
+      <div class="try-panel">
+        <div class="try-label">Try it</div>
+        <div class="row">
+          <button type="button" onclick="runStatus()">Run</button>
+        </div>
+        <pre class="result" id="statusResult">{}</pre>
+      </div>
+    </section>
+
+    <section class="card" id="api-names">
+      <h2 class="endpoint">GET /api/names/:name</h2>
+      <div class="doc">
+        <p>Resolve whether a display name (and related nip05/lud16-style matches) is already associated with a <strong>ranked</strong> user. Only considers committee perspectives with <code>rank_value ≥ 35</code> and requires a strong name match (affinity ≥ 2).</p>
+        <table class="doc-table">
+          <thead><tr><th>Parameter</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>name</code></td><td>Path segment: trimmed and lowercased on the server.</td></tr>
+          </tbody>
+        </table>
+        <p><strong>200 — available</strong></p>
+        <pre class="schema">{ "name": "alice", "available": true, "occupant": null }</pre>
+        <p><strong>200 — taken</strong></p>
+        <pre class="schema">{ "name": "alice", "available": false, "occupant": { "pubkey", "average_rank", "name_affinity", "profile": { "name", "nip05", "lud16" } } }</pre>
+        <table class="doc-table">
+          <thead><tr><th>Status</th><th><code>error.code</code></th></tr></thead>
+          <tbody>
+            <tr><td><code>400</code></td><td><code>invalid_name</code></td></tr>
+            <tr><td><code>500</code></td><td><code>internal_error</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="try-panel">
+        <div class="try-label">Try it</div>
+        <div class="row">
+          <input id="nameLookup" value="alice" placeholder="name" aria-label="Name lookup">
+          <button type="button" onclick="runNameLookup()">Run</button>
+        </div>
+        <pre class="result" id="nameLookupResult">{}</pre>
+      </div>
+    </section>
+
+    <section class="card" id="api-users-rank">
+      <h2 class="endpoint">GET /api/users/:pubkey/rank</h2>
+      <div class="doc">
+        <p>Aggregated reputation for one user: averaged rank and influence metrics across committee rows, plus per-committee breakdown.</p>
+        <table class="doc-table">
+          <thead><tr><th>Parameter</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>pubkey</code></td><td>Hex or <code>npub</code> (URL-encoded in path).</td></tr>
+          </tbody>
+        </table>
+        <p><strong>200</strong> — includes <code>pubkey</code>, <code>average_rank</code>, <code>average_influence_score</code>, <code>average_hops</code>, <code>average_follower_count</code>, <code>perspective_count</code>, <code>profile</code> (name, nip05, lud16, name_affinity), <code>committee_breakdown</code> (array of rows).</p>
+        <table class="doc-table">
+          <thead><tr><th>Status</th><th><code>error.code</code></th></tr></thead>
+          <tbody>
+            <tr><td><code>400</code></td><td><code>invalid_pubkey</code></td></tr>
+            <tr><td><code>404</code></td><td><code>not_found</code> — no ranking row for this pubkey</td></tr>
+            <tr><td><code>500</code></td><td><code>internal_error</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="try-panel">
+        <div class="try-label">Try it</div>
+        <div class="row">
+          <input id="pubkeyLookup" placeholder="hex pubkey or npub" aria-label="Pubkey for rank">
+          <button type="button" onclick="runUserRank()">Run</button>
+        </div>
+        <pre class="result" id="pubkeyLookupResult">{}</pre>
+      </div>
+    </section>
+
+    <section class="card" id="api-users-activity">
+      <h2 class="endpoint">GET /api/users/:pubkey/activity</h2>
+      <div class="doc">
+        <p>Ad-hoc pass over configured <strong>social relays</strong>: fetch recent events by this author (any kind), refresh kind <code>0</code> profile if present, and update <code>profile_refresh_queue</code> / activity timestamps in the database. Heavier than read-only APIs; may take a few seconds.</p>
+        <p><strong>200</strong> — <code>pubkey</code> (hex), <code>latest_event</code> (most recent relay event or <code>null</code>), <code>total_events_found</code>, <code>profile</code> (row from <code>user_names</code> + queue timestamps, or <code>null</code> if no profile row).</p>
+        <table class="doc-table">
+          <thead><tr><th>Status</th><th><code>error.code</code></th></tr></thead>
+          <tbody>
+            <tr><td><code>400</code></td><td><code>invalid_pubkey</code></td></tr>
+            <tr><td><code>500</code></td><td><code>internal_error</code> — relay or processing failure</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="try-panel">
+        <div class="try-label">Try it</div>
+        <div class="row">
+          <input id="activityPubkey" placeholder="hex pubkey or npub" aria-label="Pubkey for activity check">
+          <button type="button" onclick="runActivityCheck()">Run</button>
+        </div>
+        <pre class="result" id="activityCheckResult">{}</pre>
+      </div>
+    </section>
   </div>
 
   <script>
@@ -73,14 +190,24 @@
 
     async function runNameLookup() {
       const name = document.getElementById('nameLookup').value.trim();
-      const result = await fetchJson(`/api/names/${encodeURIComponent(name)}`);
+      const result = await fetchJson('/api/names/' + encodeURIComponent(name));
       showResult('nameLookupResult', result);
     }
 
     async function runUserRank() {
       const pubkey = document.getElementById('pubkeyLookup').value.trim();
-      const result = await fetchJson(`/api/users/${encodeURIComponent(pubkey)}/rank`);
+      const result = await fetchJson('/api/users/' + encodeURIComponent(pubkey) + '/rank');
       showResult('pubkeyLookupResult', result);
+    }
+
+    async function runActivityCheck() {
+      const pubkey = document.getElementById('activityPubkey').value.trim();
+      if (!pubkey) {
+        showResult('activityCheckResult', { status: 0, data: { error: { code: 'invalid_pubkey', message: 'Enter a hex pubkey or npub' } } });
+        return;
+      }
+      const result = await fetchJson('/api/users/' + encodeURIComponent(pubkey) + '/activity');
+      showResult('activityCheckResult', result);
     }
 
     async function runStatus() {

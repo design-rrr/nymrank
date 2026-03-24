@@ -77,7 +77,11 @@ server.addHook('onRequest', async (request, reply) => {
   const path = request.routerPath || request.url.split('?')[0];
   
   // Whitelist: only log these specific routes - everything else (including '/') is ignored
-  if (path === '/stats' || path === '/check-activity' || (path && path.startsWith('/user/') && path.length > 6)) {
+  if (
+    path === '/stats' ||
+    path === '/api/users/:pubkey/activity' ||
+    (path && path.startsWith('/user/') && path.length > 6)
+  ) {
     request.log.info({
       req: {
         method: request.method,
@@ -95,7 +99,11 @@ server.addHook('onResponse', async (request, reply) => {
   const path = request.routerPath || request.url.split('?')[0];
   
   // Whitelist: only log these specific routes - everything else (including '/') is ignored
-  if (path === '/stats' || path === '/check-activity' || (path && path.startsWith('/user/') && path.length > 6)) {
+  if (
+    path === '/stats' ||
+    path === '/api/users/:pubkey/activity' ||
+    (path && path.startsWith('/user/') && path.length > 6)
+  ) {
     request.log.info({
       res: {
         statusCode: reply.statusCode
@@ -170,136 +178,6 @@ server.get('/log', async (request, reply) => {
   reply.header('Content-Type', 'text/plain');
   return logBuffer.join('');
 });
-
-server.get('/check-activity', async (request, reply) => {
-  try {
-    const { pubkey } = request.query;
-    if (!pubkey) {
-      return reply.status(400).send({ error: 'Missing pubkey parameter (npub or hex)' });
-    }
-
-    // Convert npub to hex if needed
-    const trimmed = pubkey.trim();
-    let hexPubkey;
-    
-    if (trimmed.toLowerCase().startsWith('npub')) {
-      try {
-        const { decode } = require('nostr-tools/nip19');
-        const decoded = decode(trimmed);
-        if (decoded.type !== 'npub') {
-          return reply.status(400).send({ error: 'Invalid npub format: decoded type is ' + decoded.type });
-        }
-        hexPubkey = decoded.data;
-        if (!hexPubkey || typeof hexPubkey !== 'string' || hexPubkey.length !== 64) {
-          return reply.status(400).send({ error: 'Decoded npub is invalid hex format' });
-        }
-      } catch (err) {
-        return reply.status(400).send({ error: 'Failed to decode npub: ' + err.message });
-      }
-    } else {
-      // Treat as hex pubkey
-      if (trimmed.length !== 64 || !/^[0-9a-fA-F]+$/.test(trimmed)) {
-        return reply.status(400).send({ error: 'Invalid hex pubkey format (must be 64 hex chars, got length ' + trimmed.length + ')' });
-      }
-      hexPubkey = trimmed;
-    }
-
-    // Query relays for activity (any event kind) and profile (kind 0)
-    const relayUrls = relayConfig.socialRelayUrls;
-    const { SimplePool, useWebSocketImplementation } = require('nostr-tools/pool');
-    const WebSocket = require('ws');
-    useWebSocketImplementation(WebSocket);
-    
-    const pool = new SimplePool();
-    
-    // Fetch activity events (any kind)
-    const activityFilter = { authors: [hexPubkey], limit: 100 };
-    const events = await pool.querySync(relayUrls, activityFilter);
-
-    // Find most recent event
-    let latestEvent = null;
-    if (events.length > 0) {
-      latestEvent = events.reduce((latest, event) => 
-        event.created_at > latest.created_at ? event : latest
-      );
-    }
-
-    // Update database with activity if we found any
-    if (latestEvent) {
-      const activityMap = new Map();
-      activityMap.set(hexPubkey, latestEvent.created_at);
-      await database.recordActivityCheck([hexPubkey], activityMap);
-    } else {
-      // No activity found - still update last_activity_check timestamp
-      await database.recordActivityCheck([hexPubkey], new Map());
-    }
-
-    // Fetch and update profile (kind 0)
-    const profileFilter = { kinds: [0], authors: [hexPubkey] };
-    const profileEvents = await pool.querySync(relayUrls, profileFilter);
-    
-    if (profileEvents.length > 0) {
-      // Process profile events
-      const EventProcessor = require('./services/event-processor');
-      const eventProcessor = new EventProcessor(database, server.log);
-      await eventProcessor.processEvents(profileEvents, 0);
-      
-      // Update profile timestamp in profile_refresh_queue
-      const profileTimestamps = new Map();
-      profileEvents.forEach(event => {
-        const existing = profileTimestamps.get(event.pubkey);
-        if (!existing || event.created_at > existing) {
-          profileTimestamps.set(event.pubkey, event.created_at);
-        }
-      });
-      await database.recordProfileTimestamp([hexPubkey], profileTimestamps);
-    }
-    
-    pool.close(relayUrls);
-
-    // Get profile info from DB (after update so we see the new values)
-    const profileResult = await database.query(`
-      SELECT 
-        un.name,
-        un.nip05,
-        un.lud16,
-        prq.last_activity_timestamp,
-        prq.profile_timestamp,
-        prq.last_activity_check,
-        prq.last_profile_fetch
-      FROM user_names un
-      LEFT JOIN profile_refresh_queue prq ON un.pubkey = prq.pubkey
-      WHERE un.pubkey = $1
-    `, [hexPubkey]);
-
-    const profile = profileResult.rows[0] || null;
-
-    return {
-      pubkey: hexPubkey,
-      latest_event: latestEvent ? {
-        id: latestEvent.id,
-        kind: latestEvent.kind,
-        created_at: latestEvent.created_at,
-        created_at_iso: new Date(latestEvent.created_at * 1000).toISOString(),
-        days_ago: Math.floor((Date.now() / 1000 - latestEvent.created_at) / 86400)
-      } : null,
-      total_events_found: events.length,
-      profile: profile ? {
-        name: profile.name,
-        nip05: profile.nip05,
-        lud16: profile.lud16,
-        last_activity_timestamp: profile.last_activity_timestamp,
-        profile_timestamp: profile.profile_timestamp,
-        last_activity_check: profile.last_activity_check,
-        last_profile_fetch: profile.last_profile_fetch
-      } : null
-    };
-  } catch (error) {
-    server.log.error(error, 'Error checking activity');
-    return reply.status(500).send({ error: 'Internal Server Error: ' + error.message });
-  }
-});
-
 
 // --- Start and Shutdown ---
 const start = async () => {

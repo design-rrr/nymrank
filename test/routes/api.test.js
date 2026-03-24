@@ -44,6 +44,19 @@ test('GET /api/users/:pubkey/rank validates pubkey', async (t) => {
   assert.equal(body.error.code, 'invalid_pubkey')
 })
 
+test('GET /api/users/:pubkey/activity validates pubkey', async (t) => {
+  const app = await buildApiApp()
+  t.after(() => app.close())
+  const res = await app.inject({
+    method: 'GET',
+    url: '/api/users/not-a-pubkey/activity'
+  })
+
+  assert.equal(res.statusCode, 400)
+  const body = JSON.parse(res.payload)
+  assert.equal(body.error.code, 'invalid_pubkey')
+})
+
 test('GET /api/status returns ok when db query succeeds', async (t) => {
   const app = await buildApiApp({
     query: async () => ({ rows: [{ '?column?': 1 }] })

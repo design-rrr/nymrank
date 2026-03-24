@@ -113,7 +113,7 @@ The app will:
 - `GET /api/status` - API health/readiness
 - `GET /api/names/:name` - Resolve name occupancy (`pubkey`, `average_rank`, `name_affinity`)
 - `GET /api/users/:pubkey/rank` - Averaged user rank and committee breakdown
-- `GET /check-activity?pubkey=<hex|npub>` - Check activity for a specific user
+- `GET /api/users/:pubkey/activity` - Ad-hoc activity + profile refresh (hex or npub; same family as `/api/users/:pubkey/rank`)
 - `GET /healthz` - Health check
 - `GET /logs` - Recent server logs
 
@@ -184,6 +184,35 @@ cp .env.example .env
   "committee_breakdown": []
 }
 ```
+
+### `GET /api/users/<pubkey>/activity`
+
+Queries `SOCIAL_RELAY_URLS` for the author’s latest event (any kind) and kind 0 profile, then updates `last_activity_check` / `last_activity_timestamp` and profile fields when data is found. Errors use `{ "error": { "code", "message" } }` like other `/api` routes.
+
+```json
+{
+  "pubkey": "e5272de914bd301755c439b88e6959a43c9d2664831f093c51e9c799a16a102f",
+  "latest_event": {
+    "id": "...",
+    "kind": 1,
+    "created_at": 1730000000,
+    "created_at_iso": "2024-10-27T00:00:00.000Z",
+    "days_ago": 12
+  },
+  "total_events_found": 42,
+  "profile": {
+    "name": "alice",
+    "nip05": null,
+    "lud16": null,
+    "last_activity_timestamp": "1730000000",
+    "profile_timestamp": "1729900000",
+    "last_activity_check": "2025-03-24T12:00:00.000Z",
+    "last_profile_fetch": "2025-03-24T11:58:00.000Z"
+  }
+}
+```
+
+`latest_event` is `null` when no events are returned from relays; `profile` is `null` if that pubkey has no row in `user_names` after the run.
 
 ## Maintenance
 

@@ -1,6 +1,8 @@
 'use strict';
 
 const { decode } = require('nostr-tools/nip19');
+const { getRelayConfig } = require('../services/config');
+const { runAdhocActivityCheck } = require('../services/activity-check');
 
 const MIN_RANK_VALUE = 35;
 
@@ -79,6 +81,7 @@ function normalizePubkey(input) {
 
 module.exports = async function (fastify) {
   const database = fastify.database;
+  const socialRelayUrls = getRelayConfig().socialRelayUrls;
 
   fastify.get('/api/status', async (request, reply) => {
     try {
@@ -194,6 +197,31 @@ module.exports = async function (fastify) {
     } catch (error) {
       request.log.error({ err: error }, 'User rank lookup failed');
       return sendApiError(reply, 500, 'internal_error', 'Failed to fetch user rank');
+    }
+  });
+
+  fastify.get('/api/users/:pubkey/activity', async (request, reply) => {
+    let normalizedPubkey;
+    try {
+      normalizedPubkey = normalizePubkey(request.params.pubkey);
+    } catch (_) {
+      normalizedPubkey = null;
+    }
+
+    if (!normalizedPubkey) {
+      return sendApiError(reply, 400, 'invalid_pubkey', 'Pubkey must be a 64-char hex key or npub');
+    }
+
+    try {
+      return await runAdhocActivityCheck({
+        database,
+        relayUrls: socialRelayUrls,
+        hexPubkey: normalizedPubkey,
+        log: request.log
+      });
+    } catch (error) {
+      request.log.error({ err: error }, 'Activity check failed');
+      return sendApiError(reply, 500, 'internal_error', 'Activity check failed');
     }
   });
 };

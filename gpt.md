@@ -24,7 +24,7 @@ Build a **name reputation system** that warns users when trying to register name
 - ✅ Web UI with search, browse, pagination, and perspective switching
 - ✅ FAQ page explaining profile optimization
 - ✅ Materialized view for fast queries
-- ✅ Real-time activity check endpoint (`/check-activity`)
+- ✅ Real-time activity check endpoint (`GET /api/users/:pubkey/activity`)
 - ✅ Open Graph meta tags for social sharing
 - ❌ Sybil fee payment processing
 - ❌ Referrer onboarding system
