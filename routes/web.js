@@ -362,6 +362,22 @@ module.exports = async function (fastify, opts) {
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0a; color: #e0e0e0; padding: 20px; }
     .container { max-width: 1200px; margin: 0 auto; width: 100%; }
+    .page-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 8px; flex-wrap: wrap; }
+    .page-header .brand { text-decoration: none; color: inherit; flex: 1; min-width: 200px; }
+    .page-header .brand:hover { opacity: 0.95; }
+    .top-nav { display: flex; gap: 10px; align-items: center; flex-shrink: 0; margin-top: 4px; }
+    .top-nav a {
+      padding: 8px 14px;
+      background: #2a2a2a;
+      color: #4CAF50;
+      text-decoration: none;
+      border: 1px solid #4CAF50;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 14px;
+      white-space: nowrap;
+    }
+    .top-nav a:hover { background: #333; text-decoration: none; }
     h1 { margin-bottom: 10px; color: #fff; }
     .subtitle { color: #888; margin-bottom: 30px; }
     .controls { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
@@ -375,6 +391,7 @@ module.exports = async function (fastify, opts) {
     .perspective-select select { width: 100%; padding: 12px; font-size: 16px; border: 1px solid #333; background: #1a1a1a; color: #fff; border-radius: 8px; cursor: pointer; }
     @media (max-width: 768px) {
       body { padding: 12px; }
+      .page-header .top-nav { width: 100%; justify-content: flex-end; margin-top: 8px; }
       h1 { font-size: 20px; }
       .subtitle { font-size: 12px; margin-bottom: 12px; }
       .stats { gap: 8px; margin-bottom: 20px; }
@@ -469,10 +486,15 @@ module.exports = async function (fastify, opts) {
 </head>
 <body>
   <div class="container">
-    <a href="/" style="text-decoration: none;">
-      <h1>NymRank</h1>
-      <div class="subtitle">Consensus-based namespace, secured by Web-of-Trust</div>
-    </a>
+    <div class="page-header">
+      <a href="/" class="brand">
+        <h1>NymRank</h1>
+        <div class="subtitle" style="margin-bottom: 0;">Consensus-based namespace, secured by Web-of-Trust</div>
+      </a>
+      <nav class="top-nav" aria-label="Site links">
+        <a href="/api-docs">API Docs</a>
+      </nav>
+    </div>
     
     <div class="stats">
       <div class="stat-card">
@@ -491,7 +513,6 @@ module.exports = async function (fastify, opts) {
         <strong style="color: #4CAF50;">Want to occupy a name?</strong>
         <span style="color: #ccc; margin-left: 8px;">Learn how to optimize your profile →</span>
       </div>
-      <a href="/api-docs" style="padding: 8px 16px; background: #2a2a2a; color: #4CAF50; text-decoration: none; border: 1px solid #4CAF50; border-radius: 6px; font-weight: 600; white-space: nowrap;">API Docs</a>
       <a href="/faq" style="padding: 8px 16px; background: #4CAF50; color: #000; text-decoration: none; border-radius: 6px; font-weight: 600; white-space: nowrap;">FAQ</a>
     </div>
     
