@@ -271,15 +271,14 @@ module.exports = async function (fastify, opts) {
       }
     } else if (perspective) {
       // Count occupied nyms for this perspective: users with rank >= 35 and name_affinity >= 2
+      // (not filtered by last-seen — that only affects which rows appear in the list)
       countQuery = `
         SELECT COUNT(DISTINCT ur.ranked_user_pubkey)
         FROM user_rankings ur
         LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey
-        LEFT JOIN profile_refresh_queue prq ON ur.ranked_user_pubkey = prq.pubkey
         WHERE ur.committee_member_pubkey = $1
         AND ur.rank_value >= 35
         AND COALESCE(un.name_affinity, 0) >= 2
-        ${listingStaleAnd}
       `;
     } else {
       // Count occupied nyms: users with rank >= 35 and name_affinity >= 2
@@ -287,17 +286,47 @@ module.exports = async function (fastify, opts) {
         SELECT COUNT(DISTINCT ur.ranked_user_pubkey)
         FROM user_rankings ur
         LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey
-        LEFT JOIN profile_refresh_queue prq ON ur.ranked_user_pubkey = prq.pubkey
         WHERE ur.rank_value >= 35
         AND COALESCE(un.name_affinity, 0) >= 2
-        ${listingStaleAnd}
       `;
       queryParams = [];
     }
     
     const countResult = await database.query(countQuery, queryParams);
-    const total = parseInt(countResult.rows[0].count);
-    const totalPages = Math.ceil(total / limit);
+    const total = parseInt(countResult.rows[0].count, 10);
+
+    let listTotal = total;
+    if (!search && !includeStale) {
+      if (perspective) {
+        const listed = await database.query(
+          `
+          SELECT COUNT(DISTINCT ur.ranked_user_pubkey)::bigint AS c
+          FROM user_rankings ur
+          LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey
+          LEFT JOIN profile_refresh_queue prq ON ur.ranked_user_pubkey = prq.pubkey
+          WHERE ur.committee_member_pubkey = $1
+          ${listingStaleAnd}
+        `,
+          [perspective]
+        );
+        listTotal = parseInt(listed.rows[0].c, 10);
+      } else {
+        const listed = await database.query(
+          `
+          SELECT COUNT(*)::bigint AS c
+          FROM (
+            SELECT pr.ranked_user_pubkey
+            FROM precomputed_rankings pr
+            LEFT JOIN user_names un ON pr.ranked_user_pubkey = un.pubkey
+            LEFT JOIN profile_refresh_queue prq ON pr.ranked_user_pubkey = prq.pubkey
+            ${listingStaleWhere}
+          ) listed
+        `);
+        listTotal = parseInt(listed.rows[0].c, 10);
+      }
+    }
+
+    const totalPages = Math.max(1, Math.ceil(listTotal / limit));
     
     // Pre-calculate effective scores and filter grey results when greens exist (for search)
     const rowsWithScores = result.rows.map(row => {

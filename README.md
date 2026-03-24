@@ -120,6 +120,7 @@ The app will:
 ### Rankings list (`/`)
 
 - Default view and committee **perspective** filter hide accounts whose last-seen (activity or kind-0 profile time) is older than **365 days**, so the leaderboard is not dominated by long-dormant rows. Rows with **unknown** last-seen (no timestamps) still appear.
+- **Total occupied nyms** counts **everyone** who qualifies (`rank ≥ 35`, name affinity), independent of the 365-day list filter. **Page count** follows how many rows match the list (with the filter when enabled), so it stays in sync with results.
 - Append **`?include_stale=1`** or **`?all=1`** to show everyone. **Search** is not filtered.
 
 ### Background activity checks
