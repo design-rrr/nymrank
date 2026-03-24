@@ -43,15 +43,6 @@
     </div>
 
     <div class="card">
-      <h2 class="endpoint">GET /api/names/:name/suggestions</h2>
-      <div class="row">
-        <input id="suggestName" value="alice" placeholder="name">
-        <button onclick="runSuggestions()">Run</button>
-      </div>
-      <pre id="suggestResult">{}</pre>
-    </div>
-
-    <div class="card">
       <h2 class="endpoint">GET /api/users/:pubkey/rank</h2>
       <div class="row">
         <input id="pubkeyLookup" placeholder="hex pubkey or npub">
@@ -84,12 +75,6 @@
       const name = document.getElementById('nameLookup').value.trim();
       const result = await fetchJson(`/api/names/${encodeURIComponent(name)}`);
       showResult('nameLookupResult', result);
-    }
-
-    async function runSuggestions() {
-      const name = document.getElementById('suggestName').value.trim();
-      const result = await fetchJson(`/api/names/${encodeURIComponent(name)}/suggestions`);
-      showResult('suggestResult', result);
     }
 
     async function runUserRank() {

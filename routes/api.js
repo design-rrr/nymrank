@@ -1,10 +1,8 @@
 'use strict';
 
 const { decode } = require('nostr-tools/nip19');
-const { generateGroqSuggestions } = require('../services/groq-suggestions');
 
 const MIN_RANK_VALUE = 35;
-const MAX_SUGGESTIONS = 5;
 
 function sendApiError(reply, statusCode, code, message) {
   return reply.code(statusCode).send({
@@ -79,20 +77,6 @@ function normalizePubkey(input) {
   return null;
 }
 
-async function filterAvailableSuggestions(database, suggestions, limit) {
-  const available = [];
-  for (const suggestion of suggestions) {
-    const occupied = await resolveName(database, suggestion);
-    if (!occupied) {
-      available.push(suggestion);
-    }
-    if (available.length >= limit) {
-      break;
-    }
-  }
-  return available;
-}
-
 module.exports = async function (fastify) {
   const database = fastify.database;
 
@@ -143,30 +127,6 @@ module.exports = async function (fastify) {
     } catch (error) {
       request.log.error({ err: error }, 'Name lookup failed');
       return sendApiError(reply, 500, 'internal_error', 'Failed to resolve name');
-    }
-  });
-
-  fastify.get('/api/names/:name/suggestions', async (request, reply) => {
-    const normalizedName = normalizeName(request.params.name);
-    if (!normalizedName) {
-      return sendApiError(reply, 400, 'invalid_name', 'Name is required');
-    }
-
-    try {
-      const candidates = await generateGroqSuggestions(normalizedName);
-      const suggestions = await filterAvailableSuggestions(database, candidates, MAX_SUGGESTIONS);
-
-      return {
-        name: normalizedName,
-        suggestions
-      };
-    } catch (error) {
-      request.log.error({ err: error }, 'Suggestions generation failed');
-      if (error.code === 'missing_groq_key') {
-        return sendApiError(reply, 503, 'suggestions_unavailable', 'Suggestions require GROQ_API_KEY');
-      }
-
-      return sendApiError(reply, 502, 'upstream_error', 'Groq suggestions request failed');
     }
   });
 

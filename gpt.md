@@ -524,7 +524,6 @@ INSERT INTO reserved_names (name, reason, description, added_by) VALUES
 
 ### 1. Core Name Reputation APIs
 - `GET /api/names/{name}` - Check name status (returns pubkey, average_rank, name_affinity)
-- `GET /api/names/{name}/suggestions?display_name={display_name}&about={about}&nip05={nip05}&lud16={lud16}` - Suggest available name suggestions based on profile context
 
 ### 2. Reputation Boost APIs
 - `POST /api/reputation/boost` - Request paid reputation boost (sybil fee)
@@ -645,17 +644,6 @@ docker exec -it nymrank_postgres psql -U nymrank_user -d nymrank
   "pubkey": null,
   "average_rank": null,
   "name_affinity": null
-}
-```
-
-### GET /api/names/alice/suggestions?display_name=Alice%20Smith&about=Bitcoin%20developer&nip05=alice@domain.com&lud16=alice@lightning.com
-```json
-{
-  "name": "alice",
-  "suggestions": [
-    "alicebtc",
-    "alice_dev"
-  ]
 }
 ```
 

@@ -112,7 +112,6 @@ The app will:
 - `GET /api-docs` - Interactive API page (form inputs + live JSON responses)
 - `GET /api/status` - API health/readiness
 - `GET /api/names/:name` - Resolve name occupancy (`pubkey`, `average_rank`, `name_affinity`)
-- `GET /api/names/:name/suggestions` - Groq-generated available name suggestions (up to 5, name-only input)
 - `GET /api/users/:pubkey/rank` - Averaged user rank and committee breakdown
 - `GET /check-activity?pubkey=<hex|npub>` - Check activity for a specific user
 - `GET /healthz` - Health check
@@ -126,8 +125,6 @@ The app will:
 - `DB_NAME`: Database name (default: nymrank)
 - `DB_USER`: Database user (default: nymrank_user)
 - `DB_PASSWORD`: Database password (default: nymrank_password)
-- `GROQ_API_KEY`: Required for `/api/names/:name/suggestions`
-- `GROQ_MODEL`: Optional Groq model override (default: `llama-3.1-70b-versatile`)
 - `RANKING_RELAY_URLS`: Comma-separated relay list for ranking/delegation (default: `wss://nip85.brainstorm.world`)
 - `SOCIAL_RELAY_URLS`: Comma-separated relay list shared by profile fetching and activity checks
 
@@ -165,15 +162,6 @@ cp .env.example .env
       "lud16": "alice"
     }
   }
-}
-```
-
-### `GET /api/names/alice/suggestions`
-
-```json
-{
-  "name": "alice",
-  "suggestions": ["alicehq", "alice_btc", "realalice", "aliceapp", "alicex"]
 }
 ```
 

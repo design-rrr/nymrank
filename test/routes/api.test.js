@@ -44,27 +44,6 @@ test('GET /api/users/:pubkey/rank validates pubkey', async (t) => {
   assert.equal(body.error.code, 'invalid_pubkey')
 })
 
-test('GET /api/names/:name/suggestions requires GROQ_API_KEY', async (t) => {
-  const app = await buildApiApp()
-  t.after(() => app.close())
-  const previous = process.env.GROQ_API_KEY
-  delete process.env.GROQ_API_KEY
-  t.after(() => {
-    if (previous !== undefined) {
-      process.env.GROQ_API_KEY = previous
-    }
-  })
-
-  const res = await app.inject({
-    method: 'GET',
-    url: '/api/names/alice/suggestions'
-  })
-
-  assert.equal(res.statusCode, 503)
-  const body = JSON.parse(res.payload)
-  assert.equal(body.error.code, 'suggestions_unavailable')
-})
-
 test('GET /api/status returns ok when db query succeeds', async (t) => {
   const app = await buildApiApp({
     query: async () => ({ rows: [{ '?column?': 1 }] })

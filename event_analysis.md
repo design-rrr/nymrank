@@ -274,7 +274,6 @@ The hops system (0, 1, 2) indicates network distance for influence calculation:
 3. **Name Resolution**: Implement profile metadata ingestion (kind 0)
 4. **API Development**: Build name reputation endpoints
 5. **Reputation Grants**: Implement follow mechanism for name protection
-6. **Alternative Suggestions**: Build name suggestion algorithm
 
 ## Conclusion
 

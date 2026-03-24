@@ -6,7 +6,6 @@ NymRank provides a core API for name reputation data. Separate applications cons
 ## Core API
 **NymRank API** - Provides raw name reputation data:
 - `GET /api/names/{name}` - Returns pubkey, average_rank, name_affinity
-- `GET /api/names/{name}/suggestions` - Returns available name suggestions
 - `GET /api/users/{pubkey}/rank` - Returns user ranking data
 
 ## Frontend Applications
@@ -18,13 +17,12 @@ NymRank provides a core API for name reputation data. Separate applications cons
 - **Name lookup API** - Check name status for users
 - **Referral system** - Apps can take sybil fees themselves
 - **Clink integration** - Apps provide Clink offers for payment facilitation
-- **Name suggestions** - Paid service for occupied names
 
 **Developer Integration**:
 1. App integrates NymRank Boost API + Clink SDK (`@shocknet/clink-sdk`)
 2. User tries to register name in app
 3. App checks name status via API
-4. If occupied: App offers paid suggestions with their Clink offer
+4. If occupied: App asks the user to pick another name (or your own naming flow)
 5. If available: App offers reputation boost with their Clink offer
 6. Payment goes to referrer, callback handled by referrer's system
 

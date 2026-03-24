@@ -26,6 +26,7 @@ const streams = pino.multistream([
 
 const server = fastify({
   disableRequestLogging: true,
+  trustProxy: true,
   logger: {
     level: 'info',
     stream: streams
