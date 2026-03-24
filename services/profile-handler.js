@@ -24,10 +24,15 @@ class ProfileHandler {
     this.isStopping = false;
   }
 
+  /**
+   * @returns {{ suggestSoonRecheck: boolean }} When true, scheduler may run again soon after a long pass (see RelayListener).
+   */
   async fetchAndProcessProfiles(pubkeys) {
+    let suggestSoonRecheck = false;
+
     if (pubkeys.length === 0) {
       this.log.info('No ranked pubkeys found, skipping profile subscription.');
-      return;
+      return { suggestSoonRecheck: false };
     }
 
     // Filter out pubkeys we already have profiles for (with timestamp check)
@@ -35,6 +40,7 @@ class ProfileHandler {
     if (newPubkeys.length === 0) {
       console.log(`[KIND-0 PROFILE FETCH] All ${pubkeys.length} profiles queried recently, skipping.`);
     } else {
+      suggestSoonRecheck = true;
       console.log(`[KIND-0 PROFILE FETCH] Fetching ${newPubkeys.length} kind-0 profiles (${pubkeys.length - newPubkeys.length} queried recently)`);
       
     // Batch requests - kind-0 is replaceable so we can batch larger (500 pubkeys = 500 events max)
@@ -43,7 +49,7 @@ class ProfileHandler {
     for (let i = 0; i < newPubkeys.length; i += BATCH_SIZE) {
       if (this.isStopping) {
         console.log('[KIND-0 PROFILE FETCH] Shutdown requested, stopping...');
-        return;
+        return { suggestSoonRecheck: true };
       }
       const batch = newPubkeys.slice(i, i + BATCH_SIZE);
       const batchNum = Math.floor(i / BATCH_SIZE) + 1;
@@ -111,10 +117,8 @@ class ProfileHandler {
     const tier1Pubkeys = activityDueResult.rows.map((r) => r.ranked_user_pubkey);
 
     if (tier1Pubkeys.length === 0) {
-      console.log(
-        `[ACTIVITY CHECK] No users need a run (activity within ${ACTIVITY_WINDOW_DAYS}d in DB, or check not due yet; rank >= ${MIN_RANK_VALUE_ACTIVITY}).`
-      );
-      return;
+      await this.logActivityCheckSkipBreakdown(windowDays);
+      return { suggestSoonRecheck };
     }
 
     console.log(
@@ -143,9 +147,53 @@ class ProfileHandler {
         `[ACTIVITY CHECK] Tier-2 (verify after tier-1; still no activity in last ${ACTIVITY_WINDOW_DAYS}d): ${tier2Pubkeys.length} users, batch ${TIER2_VERIFY_BATCH_SIZE}`
       );
       await this.processActivityBatches(tier2Pubkeys, TIER2_VERIFY_BATCH_SIZE, 'tier2');
+    } else {
+      console.log(
+        `[ACTIVITY CHECK] Tier-2 verify: 0 pubkeys still stale after tier-1 (no small-batch pass needed this cycle).`
+      );
     }
 
     console.log('[ACTIVITY CHECK] Complete.');
+    return { suggestSoonRecheck: true };
+  }
+
+  /**
+   * When tier-1 eligibility is empty, explain why and log that tier-2 cannot run (it only follows tier-1).
+   */
+  async logActivityCheckSkipBreakdown(windowDays) {
+    const p = [MIN_RANK_VALUE_ACTIVITY, windowDays];
+    const freshQ = await this.database.query(
+      `
+      SELECT COUNT(DISTINCT ur.ranked_user_pubkey)::bigint AS c
+      FROM user_rankings ur
+      INNER JOIN profile_refresh_queue prq ON ur.ranked_user_pubkey = prq.pubkey
+      WHERE ur.rank_value >= $1
+        AND prq.last_activity_timestamp >= EXTRACT(EPOCH FROM (NOW() - ($2::text || ' days')::INTERVAL))::bigint
+      `,
+      p
+    );
+    const cooldownQ = await this.database.query(
+      `
+      SELECT COUNT(DISTINCT ur.ranked_user_pubkey)::bigint AS c
+      FROM user_rankings ur
+      INNER JOIN profile_refresh_queue prq ON ur.ranked_user_pubkey = prq.pubkey
+      WHERE ur.rank_value >= $1
+        AND (
+          prq.last_activity_timestamp IS NULL
+          OR prq.last_activity_timestamp < EXTRACT(EPOCH FROM (NOW() - ($2::text || ' days')::INTERVAL))::bigint
+        )
+        AND prq.last_activity_check IS NOT NULL
+        AND prq.last_activity_check > NOW() - ($2::text || ' days')::INTERVAL
+      `,
+      p
+    );
+    const fresh = Number(freshQ.rows[0].c);
+    const cooldown = Number(cooldownQ.rows[0].c);
+    console.log(
+      `[ACTIVITY CHECK] Tier-1=0 → tier-2 not run (tier-2 only runs after tier-1 in the same pass). ` +
+        `Breakdown (rank>=${MIN_RANK_VALUE_ACTIVITY}): ${fresh} with last_activity in last ${ACTIVITY_WINDOW_DAYS}d (skip); ` +
+        `${cooldown} stale/NULL activity but checked within ${ACTIVITY_WINDOW_DAYS}d (cooldown).`
+    );
   }
 
   /**

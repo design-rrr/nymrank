@@ -64,7 +64,7 @@ class RelayListener {
   }
 
   async subscribeToProfiles(pubkeys) {
-    await this.profileHandler.fetchAndProcessProfiles(pubkeys);
+    return this.profileHandler.fetchAndProcessProfiles(pubkeys);
   }
 
   startPeriodicProfileChecks() {
@@ -73,11 +73,11 @@ class RelayListener {
     // - Profiles: refreshes if last_profile_fetch > 1 day old
     // - Activity: no DB activity in 10d and last_activity_check NULL or > 10d old
     const INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
-    
+    /** One shot after a run that actually did work, so long passes re-eligible quickly without minutely polling when idle */
+    const FOLLOWUP_RECHECK_MS = 60 * 1000;
+
     this.log.info(`Starting periodic profile/activity checks (every ${INTERVAL_MS / 1000 / 60} minutes)`);
-    
-    // Run check and schedule next one immediately after completion
-    // This ensures we keep checking until no more work is needed
+
     const runCheck = () => {
       if (this.profileCheckRunning) {
         return; // Already running, skip
@@ -85,16 +85,16 @@ class RelayListener {
       this.profileCheckRunning = true;
       this.log.info('[Periodic Check] Running profile/activity refresh...');
       this.subscribeToProfiles(this.rankedPubkeys)
-        .then(() => {
+        .then((runResult) => {
           this.log.info('[Periodic Check] Profile/activity refresh complete');
           this.profileCheckRunning = false;
-          // Schedule next check immediately (with small delay to avoid tight loops)
-          // fetchAndProcessProfiles will skip if nothing is due
-          setTimeout(() => {
-            if (this.profileCheckInterval) {
-              runCheck();
-            }
-          }, 60000); // 1 minute delay before re-checking
+          if (runResult?.suggestSoonRecheck) {
+            setTimeout(() => {
+              if (this.profileCheckInterval) {
+                runCheck();
+              }
+            }, FOLLOWUP_RECHECK_MS);
+          }
         })
         .catch((error) => {
           this.log.error('[Periodic Check] Error during profile/activity refresh:', error);

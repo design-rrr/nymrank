@@ -128,7 +128,9 @@ Uses one definition of **recent**: **10 days** (same window for “activity in D
 
 - **Who gets checked** (`rank_value ≥ 35`): no `last_activity_timestamp`, or it is **older than 10 days**, **and** we never checked activity or `last_activity_check` is **older than 10 days**. Anyone with activity in the DB **within 10 days** is skipped (no relay query that cycle).
 - **Tier 1** — first pass, batches of **10** authors per relay filter.
-- **Tier 2** — **after** tier 1, only for the **same** users who **still** have no activity in the last **10 days** in the DB; batches of **3** to mimic a tighter, nearer-to-single-key query when large batches under-return events.
+- **Tier 2** — **after** tier 1 in the **same** run, only for pubkeys that **still** have no activity in the last **10 days** in the DB; batches of **3**. If tier-1 eligibility is empty, **neither** tier runs (tier 2 is not a separate scheduler).
+
+Periodic scheduling: a **6 hour** `setInterval` triggers checks. While a run is in progress, overlapping ticks are **skipped** (`profileCheckRunning`). If a run **did work** (kind-0 fetch and/or activity tiers), a **one-shot** follow-up runs **~60s** later so long backlogs can make progress without polling every minute when idle.
 
 ## Environment Variables
 
