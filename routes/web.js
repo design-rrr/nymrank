@@ -1,5 +1,8 @@
 'use strict'
 
+/** Hide default/perspective listings when last-seen is older than this (still shown if unknown). */
+const LISTING_HIDE_LAST_SEEN_OLDER_THAN_DAYS = 365;
+
 module.exports = async function (fastify, opts) {
   const database = fastify.database;
 
@@ -11,6 +14,25 @@ module.exports = async function (fastify, opts) {
     const offset = (page - 1) * limit;
     const search = (request.query.search || '').trim();
     const perspective = request.query.perspective || '';
+    const includeStale =
+      request.query.include_stale === '1' ||
+      request.query.all === '1';
+
+    const listingStaleAnd = includeStale
+      ? ''
+      : ` AND (
+      COALESCE(prq.last_activity_timestamp, un.profile_timestamp) IS NULL
+      OR (NOW() - TO_TIMESTAMP(COALESCE(prq.last_activity_timestamp, un.profile_timestamp)::bigint))
+          < INTERVAL '${LISTING_HIDE_LAST_SEEN_OLDER_THAN_DAYS} days'
+    )`;
+
+    const listingStaleWhere = includeStale
+      ? ''
+      : `WHERE (
+      COALESCE(prq.last_activity_timestamp, un.profile_timestamp) IS NULL
+      OR (NOW() - TO_TIMESTAMP(COALESCE(prq.last_activity_timestamp, un.profile_timestamp)::bigint))
+          < INTERVAL '${LISTING_HIDE_LAST_SEEN_OLDER_THAN_DAYS} days'
+    )`;
     
     // Get committee members
     const committeeResult = await database.query('SELECT name, pubkey FROM committee_members WHERE is_active = true ORDER BY name');
@@ -156,6 +178,7 @@ module.exports = async function (fastify, opts) {
         LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey
         LEFT JOIN profile_refresh_queue prq ON ur.ranked_user_pubkey = prq.pubkey
         WHERE ur.committee_member_pubkey = $1
+        ${listingStaleAnd}
         ORDER BY effective_score DESC NULLS LAST
         LIMIT $2 OFFSET $3
       `;
@@ -178,6 +201,7 @@ module.exports = async function (fastify, opts) {
         FROM precomputed_rankings pr
         LEFT JOIN user_names un ON pr.ranked_user_pubkey = un.pubkey
         LEFT JOIN profile_refresh_queue prq ON pr.ranked_user_pubkey = prq.pubkey
+        ${listingStaleWhere}
         ORDER BY pr.effective_score DESC NULLS LAST
         LIMIT $1 OFFSET $2
       `;
@@ -251,9 +275,11 @@ module.exports = async function (fastify, opts) {
         SELECT COUNT(DISTINCT ur.ranked_user_pubkey)
         FROM user_rankings ur
         LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey
+        LEFT JOIN profile_refresh_queue prq ON ur.ranked_user_pubkey = prq.pubkey
         WHERE ur.committee_member_pubkey = $1
         AND ur.rank_value >= 35
         AND COALESCE(un.name_affinity, 0) >= 2
+        ${listingStaleAnd}
       `;
     } else {
       // Count occupied nyms: users with rank >= 35 and name_affinity >= 2
@@ -261,8 +287,10 @@ module.exports = async function (fastify, opts) {
         SELECT COUNT(DISTINCT ur.ranked_user_pubkey)
         FROM user_rankings ur
         LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey
+        LEFT JOIN profile_refresh_queue prq ON ur.ranked_user_pubkey = prq.pubkey
         WHERE ur.rank_value >= 35
         AND COALESCE(un.name_affinity, 0) >= 2
+        ${listingStaleAnd}
       `;
       queryParams = [];
     }

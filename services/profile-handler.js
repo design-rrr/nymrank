@@ -3,6 +3,16 @@ const EventProcessor = require('./event-processor');
 const { getRelayConfig } = require('./config');
 
 const KIND_PROFILE = 0;
+const MIN_RANK_VALUE_ACTIVITY = 35;
+/**
+ * Single window for everything we care about on the list: "recent" activity and how often we re-check.
+ * If last_activity_timestamp is within this window, we skip relay queries. If not, we may query when
+ * last_activity_check is older than this (or never).
+ */
+const ACTIVITY_WINDOW_DAYS = 10;
+const TIER1_BATCH_SIZE = 10;
+/** Second pass after tier-1 for the same users who still have no activity in ACTIVITY_WINDOW_DAYS. */
+const TIER2_VERIFY_BATCH_SIZE = 3;
 
 class ProfileHandler {
   constructor(relayUrls, database, log) {
@@ -78,43 +88,83 @@ class ProfileHandler {
     console.log(`[KIND-0 PROFILE FETCH] Complete - ${newPubkeys.length} kind-0 profiles fetched.`);
     }
     
-    // Filter to users whose activity is stale AND meet minimum base score:
-    //   - never checked before (no row in profile_refresh_queue), OR
-    //   - last_activity_check older than 7 days
-    //   - rank_value >= 35 (minimum base score threshold, filters out bots/inactive)
-    const MIN_RANK_VALUE = 35;
-    const pubkeysNeedingActivity = await this.database.query(`
+    const windowDays = String(ACTIVITY_WINDOW_DAYS);
+    const activityDueResult = await this.database.query(
+      `
       SELECT ur.ranked_user_pubkey
       FROM user_rankings ur
-      LEFT JOIN profile_refresh_queue prq
-        ON ur.ranked_user_pubkey = prq.pubkey
-      WHERE (prq.pubkey IS NULL
-         OR prq.last_activity_check IS NULL
-         OR prq.last_activity_check <= NOW() - INTERVAL '7 days')
-         AND ur.rank_value >= $1
+      LEFT JOIN profile_refresh_queue prq ON ur.ranked_user_pubkey = prq.pubkey
+      WHERE ur.rank_value >= $1
+        AND (
+          prq.last_activity_timestamp IS NULL
+          OR prq.last_activity_timestamp < EXTRACT(EPOCH FROM (NOW() - ($2::text || ' days')::INTERVAL))::bigint
+        )
+        AND (
+          prq.pubkey IS NULL
+          OR prq.last_activity_check IS NULL
+          OR prq.last_activity_check <= NOW() - ($2::text || ' days')::INTERVAL
+        )
       GROUP BY ur.ranked_user_pubkey
-    `, [MIN_RANK_VALUE]);
-    const activityPubkeys = pubkeysNeedingActivity.rows.map(r => r.ranked_user_pubkey);
-    
-    if (activityPubkeys.length === 0) {
-      console.log(`[ACTIVITY CHECK] All eligible users (rank_value >= ${MIN_RANK_VALUE}) queried within 7 days, skipping.`);
+    `,
+      [MIN_RANK_VALUE_ACTIVITY, windowDays]
+    );
+    const tier1Pubkeys = activityDueResult.rows.map((r) => r.ranked_user_pubkey);
+
+    if (tier1Pubkeys.length === 0) {
+      console.log(
+        `[ACTIVITY CHECK] No users need a run (activity within ${ACTIVITY_WINDOW_DAYS}d in DB, or check not due yet; rank >= ${MIN_RANK_VALUE_ACTIVITY}).`
+      );
       return;
     }
-    
-    console.log(`[ACTIVITY CHECK] Checking activity for ${activityPubkeys.length} users (last_activity_check NULL or >7 days old, rank_value >= ${MIN_RANK_VALUE})`);
-    
-    const BATCH_SIZE = 10; // Increased batch size for faster processing
-    for (let i = 0; i < activityPubkeys.length; i += BATCH_SIZE) {
+
+    console.log(
+      `[ACTIVITY CHECK] Tier-1: ${tier1Pubkeys.length} users without activity in last ${ACTIVITY_WINDOW_DAYS}d and check due, batch ${TIER1_BATCH_SIZE}`
+    );
+    await this.processActivityBatches(tier1Pubkeys, TIER1_BATCH_SIZE, 'tier1');
+
+    const stillNoRecentActivity = await this.database.query(
+      `
+      SELECT prq.pubkey AS ranked_user_pubkey
+      FROM profile_refresh_queue prq
+      INNER JOIN user_rankings ur ON ur.ranked_user_pubkey = prq.pubkey
+      WHERE ur.rank_value >= $1
+        AND prq.pubkey = ANY($3::text[])
+        AND (
+          prq.last_activity_timestamp IS NULL
+          OR prq.last_activity_timestamp < EXTRACT(EPOCH FROM (NOW() - ($2::text || ' days')::INTERVAL))::bigint
+        )
+    `,
+      [MIN_RANK_VALUE_ACTIVITY, windowDays, tier1Pubkeys]
+    );
+    const tier2Pubkeys = stillNoRecentActivity.rows.map((r) => r.ranked_user_pubkey);
+
+    if (tier2Pubkeys.length > 0) {
+      console.log(
+        `[ACTIVITY CHECK] Tier-2 (verify after tier-1; still no activity in last ${ACTIVITY_WINDOW_DAYS}d): ${tier2Pubkeys.length} users, batch ${TIER2_VERIFY_BATCH_SIZE}`
+      );
+      await this.processActivityBatches(tier2Pubkeys, TIER2_VERIFY_BATCH_SIZE, 'tier2');
+    }
+
+    console.log('[ACTIVITY CHECK] Complete.');
+  }
+
+  /**
+   * @param {string[]} activityPubkeys
+   * @param {number} batchSize
+   * @param {string} label
+   */
+  async processActivityBatches(activityPubkeys, batchSize, label) {
+    for (let i = 0; i < activityPubkeys.length; i += batchSize) {
       if (this.isStopping) {
         console.log('[ACTIVITY CHECK] Shutdown requested, stopping...');
         return;
       }
-      const batch = activityPubkeys.slice(i, i + BATCH_SIZE);
-      const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-      const totalBatches = Math.ceil(activityPubkeys.length / BATCH_SIZE);
+      const batch = activityPubkeys.slice(i, i + batchSize);
+      const batchNum = Math.floor(i / batchSize) + 1;
+      const totalBatches = Math.ceil(activityPubkeys.length / batchSize);
       const progressPct = Math.round((i / activityPubkeys.length) * 100);
-      
-      console.log(`[ACTIVITY CHECK] Batch ${batchNum}/${totalBatches} (${progressPct}%)`);
+
+      console.log(`[ACTIVITY CHECK] ${label} batch ${batchNum}/${totalBatches} (${progressPct}%)`);
       
       // Get last activity timestamps for this batch to filter events
       // Only use last_activity_timestamp if we've actually done a proper activity check before
@@ -327,12 +377,10 @@ class ProfileHandler {
       }
       
       // Delay after each batch to be nice to relays
-      if (i + BATCH_SIZE < activityPubkeys.length) {
+      if (i + batchSize < activityPubkeys.length) {
         await new Promise(resolve => setTimeout(resolve, 1000)); // Increased delay
       }
     }
-    
-    console.log(`[ACTIVITY CHECK] Complete.`);
   }
 
   close() {

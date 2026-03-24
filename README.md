@@ -117,6 +117,19 @@ The app will:
 - `GET /healthz` - Health check
 - `GET /logs` - Recent server logs
 
+### Rankings list (`/`)
+
+- Default view and committee **perspective** filter hide accounts whose last-seen (activity or kind-0 profile time) is older than **365 days**, so the leaderboard is not dominated by long-dormant rows. Rows with **unknown** last-seen (no timestamps) still appear.
+- Append **`?include_stale=1`** or **`?all=1`** to show everyone. **Search** is not filtered.
+
+### Background activity checks
+
+Uses one definition of **recent**: **10 days** (same window for “activity in DB counts as fresh” and “time before we run another check”).
+
+- **Who gets checked** (`rank_value ≥ 35`): no `last_activity_timestamp`, or it is **older than 10 days**, **and** we never checked activity or `last_activity_check` is **older than 10 days**. Anyone with activity in the DB **within 10 days** is skipped (no relay query that cycle).
+- **Tier 1** — first pass, batches of **10** authors per relay filter.
+- **Tier 2** — **after** tier 1, only for the **same** users who **still** have no activity in the last **10 days** in the DB; batches of **3** to mimic a tighter, nearer-to-single-key query when large batches under-return events.
+
 ## Environment Variables
 
 - `PORT`: Server port (default: 3000)

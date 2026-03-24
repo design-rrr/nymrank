@@ -51,7 +51,7 @@ class RelayListener {
         // Schedule periodic profile/activity checks (every 6 hours)
         // This ensures:
         // - Profile refreshes happen within 1 day (checked every 6h)
-        // - Activity checks happen within 7 days (checked every 6h)
+        // - Activity checks use a 10d freshness window (checked every 6h)
         this.startPeriodicProfileChecks();
       } else {
         this.log.warn('No ranked users found - run backfill first');
@@ -71,7 +71,7 @@ class RelayListener {
     // Run profile/activity checks every 6 hours (fallback)
     // fetchAndProcessProfiles internally checks timestamps:
     // - Profiles: refreshes if last_profile_fetch > 1 day old
-    // - Activity: checks if last_activity_check is NULL or > 7 days old
+    // - Activity: no DB activity in 10d and last_activity_check NULL or > 10d old
     const INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
     
     this.log.info(`Starting periodic profile/activity checks (every ${INTERVAL_MS / 1000 / 60} minutes)`);
