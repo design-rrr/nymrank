@@ -1,5 +1,10 @@
 'use strict'
 
+const {
+  fetchAggregatedNameSearch,
+  countAggregatedNameSearch
+} = require('../services/aggregated-name-search');
+
 /** Hide default/perspective listings when last-seen is older than this (still shown if unknown). */
 const LISTING_HIDE_LAST_SEEN_OLDER_THAN_DAYS = 365;
 
@@ -40,7 +45,6 @@ module.exports = async function (fastify, opts) {
     
     let query, params;
     let queryParams = [];
-    let paramIndex = 1;
     
     if (search) {
       // Search query - always use user_rankings to support perspective filtering
@@ -105,59 +109,8 @@ module.exports = async function (fastify, opts) {
         params = [search, perspective, limit, offset];
         queryParams = [search, perspective];
       } else {
-        // Search without perspective - aggregate across all committee members
-        query = `
-          SELECT 
-            ur.ranked_user_pubkey,
-            un.name,
-            un.nip05,
-            un.lud16,
-            ROUND(AVG(ur.rank_value))::INTEGER as rank_value,
-            AVG(ur.influence_score) as influence_score,
-            ROUND(AVG(ur.hops))::INTEGER as hops,
-            ROUND(AVG(ur.follower_count))::INTEGER as follower_count,
-            COALESCE(prq.last_activity_timestamp, un.profile_timestamp) as last_seen,
-            (
-              AVG(ur.influence_score) * 
-              CASE 
-                WHEN EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(COALESCE(prq.last_activity_timestamp, un.profile_timestamp)))) < 180 * 86400 THEN 1.0
-                WHEN EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(COALESCE(prq.last_activity_timestamp, un.profile_timestamp)))) < 365 * 86400 THEN 0.9
-                WHEN EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(COALESCE(prq.last_activity_timestamp, un.profile_timestamp)))) < 730 * 86400 THEN 0.7
-                ELSE 0.5
-              END *
-              LOG(GREATEST(AVG(ur.follower_count), 1) + 1)
-            ) * (
-              CASE 
-                WHEN LOWER(un.name) = LOWER($1) THEN 2 
-                WHEN LOWER(un.name) LIKE LOWER($1) || ' %' THEN 1
-                ELSE 0 
-              END +
-              CASE WHEN LOWER(un.nip05) = LOWER($1) THEN 1 ELSE 0 END +
-              CASE WHEN LOWER(un.lud16) = LOWER($1) THEN 1 ELSE 0 END
-            ) as blended_score
-          FROM user_rankings ur
-          LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey
-          LEFT JOIN profile_refresh_queue prq ON ur.ranked_user_pubkey = prq.pubkey
-          WHERE (
-            (LOWER(un.name) = LOWER($1) AND un.name IS NOT NULL)
-            OR (LOWER(un.name) LIKE LOWER($1) || ' %' AND un.name IS NOT NULL)
-            OR (LOWER(un.nip05) = LOWER($1) AND LOWER(un.lud16) = LOWER($1) AND un.nip05 IS NOT NULL AND un.lud16 IS NOT NULL)
-          )
-          AND ur.rank_value >= 35
-          GROUP BY ur.ranked_user_pubkey, un.name, un.nip05, un.lud16, prq.last_activity_timestamp, un.profile_timestamp
-          HAVING (
-            CASE 
-              WHEN LOWER(un.name) = LOWER($1) THEN 2 
-              WHEN LOWER(un.name) LIKE LOWER($1) || ' %' THEN 1
-              ELSE 0 
-            END +
-            CASE WHEN LOWER(un.nip05) = LOWER($1) THEN 1 ELSE 0 END +
-            CASE WHEN LOWER(un.lud16) = LOWER($1) THEN 1 ELSE 0 END
-          ) >= 2
-          ORDER BY blended_score DESC NULLS LAST
-          LIMIT $2 OFFSET $3
-        `;
-        params = [search, limit, offset];
+        query = null;
+        params = null;
         queryParams = [search];
       }
     } else if (perspective) {
@@ -208,7 +161,10 @@ module.exports = async function (fastify, opts) {
       params = [limit, offset];
     }
     
-    const result = await database.query(query, params);
+    const result =
+      search && !perspective
+        ? { rows: await fetchAggregatedNameSearch(database, search, limit, offset) }
+        : await database.query(query, params);
     
     // Count query - also use precomputed view when possible
     let countQuery;
@@ -242,32 +198,7 @@ module.exports = async function (fastify, opts) {
           WHERE match_affinity >= 2
         `;
       } else {
-        // Search without perspective - aggregate across all committee members with affinity filter
-        countQuery = `
-          SELECT COUNT(DISTINCT ranked_user_pubkey) FROM (
-            SELECT 
-              ur.ranked_user_pubkey,
-              (
-                CASE 
-                  WHEN LOWER(un.name) = LOWER($1) THEN 2 
-                  WHEN LOWER(un.name) LIKE LOWER($1) || ' %' THEN 1
-                  ELSE 0 
-                END +
-                CASE WHEN LOWER(un.nip05) = LOWER($1) THEN 1 ELSE 0 END +
-                CASE WHEN LOWER(un.lud16) = LOWER($1) THEN 1 ELSE 0 END
-              ) as match_affinity
-            FROM user_rankings ur
-            LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey
-            WHERE ur.rank_value >= 35
-            AND (
-              LOWER(un.name) = LOWER($1) OR
-              LOWER(un.name) LIKE LOWER($1) || ' %' OR
-              LOWER(un.nip05) = LOWER($1) OR
-              LOWER(un.lud16) = LOWER($1)
-            )
-          ) ranked
-          WHERE match_affinity >= 2
-        `;
+        countQuery = null;
       }
     } else if (perspective) {
       // Count occupied nyms for this perspective: users with rank >= 35 and name_affinity >= 2
@@ -292,8 +223,10 @@ module.exports = async function (fastify, opts) {
       queryParams = [];
     }
     
-    const countResult = await database.query(countQuery, queryParams);
-    const total = parseInt(countResult.rows[0].count, 10);
+    const total =
+      search && !perspective
+        ? await countAggregatedNameSearch(database, search)
+        : parseInt((await database.query(countQuery, queryParams)).rows[0].count, 10);
 
     let listTotal = total;
     if (!search && !includeStale) {

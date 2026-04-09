@@ -3,8 +3,7 @@
 const { decode } = require('nostr-tools/nip19');
 const { getRelayConfig } = require('../services/config');
 const { runAdhocActivityCheck } = require('../services/activity-check');
-
-const MIN_RANK_VALUE = 35;
+const { fetchAggregatedNameSearch } = require('../services/aggregated-name-search');
 
 function sendApiError(reply, statusCode, code, message) {
   return reply.code(statusCode).send({
@@ -19,47 +18,18 @@ function normalizeName(name) {
   return (name || '').trim().toLowerCase();
 }
 
-function buildMatchAffinityExpr(paramRef) {
-  return `
-    (
-      CASE
-        WHEN LOWER(un.name) = LOWER(${paramRef}) THEN 2
-        WHEN LOWER(un.name) LIKE LOWER(${paramRef}) || ' %' THEN 1
-        ELSE 0
-      END +
-      CASE WHEN LOWER(un.nip05) = LOWER(${paramRef}) THEN 1 ELSE 0 END +
-      CASE WHEN LOWER(un.lud16) = LOWER(${paramRef}) THEN 1 ELSE 0 END
-    )
-  `;
-}
-
 async function resolveName(database, name) {
-  const matchAffinity = buildMatchAffinityExpr('$1');
-  const query = `
-    SELECT
-      ur.ranked_user_pubkey AS pubkey,
-      ROUND(AVG(ur.rank_value))::INTEGER AS average_rank,
-      ${matchAffinity}::INTEGER AS name_affinity,
-      un.name,
-      un.nip05,
-      un.lud16
-    FROM user_rankings ur
-    LEFT JOIN user_names un ON ur.ranked_user_pubkey = un.pubkey
-    WHERE ur.rank_value >= $2
-      AND (
-        LOWER(un.name) = LOWER($1)
-        OR LOWER(un.name) LIKE LOWER($1) || ' %'
-        OR LOWER(un.nip05) = LOWER($1)
-        OR LOWER(un.lud16) = LOWER($1)
-      )
-    GROUP BY ur.ranked_user_pubkey, un.name, un.nip05, un.lud16
-    HAVING ${matchAffinity} >= 2
-    ORDER BY name_affinity DESC, average_rank DESC, pubkey ASC
-    LIMIT 1
-  `;
-
-  const result = await database.query(query, [name, MIN_RANK_VALUE]);
-  return result.rows[0] || null;
+  const rows = await fetchAggregatedNameSearch(database, name, 1, 0);
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    pubkey: row.ranked_user_pubkey,
+    average_rank: row.rank_value,
+    name_affinity: row.name_affinity,
+    name: row.name,
+    nip05: row.nip05,
+    lud16: row.lud16
+  };
 }
 
 function normalizePubkey(input) {
