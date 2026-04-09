@@ -9,6 +9,18 @@ This document analyzes the captured events from the Nostr relay `wss://nip85.bra
 - `kind:10040` - Delegation events where users delegate to service keys
 - `kind:30382` - Ranking events where metrics are stored in tags (not content)
 
+## Registration outcomes (integrators)
+
+The HTTP API exposes occupancy, `average_rank`, and `name_affinity`. Client apps usually map bands to copy:
+
+- **Reserved** (`reserved_names`): table exists in `schema.sql`, but **`GET /api/names` does not query it** — implement reserved-name policy in the client or extend the server.
+- **Occupied, rank ≥ 95**: strongest discouragement.
+- **Occupied, rank 75–94**: strong discouragement.
+- **Occupied, rank 35–74**: caution; weaker social resolution.
+- **Below 35** or absent from rankings: often treated as low signal for protection; “available” flows are product-defined.
+
+Search paths apply **rank ≥ 35** and a **per-query match score ≥ 2** (see `routes/web.js` and `services/aggregated-name-search.js`). Default name search (`aggregated-name-search.js`) also requires handle match via **`name` / `name` prefix** or **both** nip05 and lud16 equal to the query. **Perspective + search** uses a wider `WHERE` (name or nip05 or lud16) but the same scoring formula, so nip05+lud16 both matching without a `name` can still score 2+.
+
 ## Event Structure
 
 ### Basic Nostr Event Format
@@ -90,13 +102,12 @@ graph TD
 ```
 
 ### 2. Delegation Events (Kind 10040)
-**Purpose**: Users delegate to service keys for ranking
+**Purpose**: Committee members delegate to **service keys** that publish kind 30382 rankings.
 
-**Key Tags**:
-- `30382:rank`: Delegation for rank metric
-- `30382:personalizedGrapeRank_*`: Delegation for specific metrics
-- Second tag: User pubkey being ranked
-- Third tag: Source relay
+**Key Tags** (see `parseDelegationEvent` in `services/event-processor.js`):
+- First element: `30382:rank` or `30382:personalizedGrapeRank_*` (metric key)
+- Second element: **Service pubkey** (signer of the corresponding 30382 events)
+- Third element: Source relay URL
 
 **Example**:
 ```json
@@ -134,12 +145,13 @@ graph TD
 
 ```mermaid
 graph TD
-    A[Nostr Relay] --> B[Real-time Event Processing]
-    B --> C[Kind 0: Profile Metadata]
+    A[Nostr relays] --> B[Backfill / JSONL import for 10040 + 30382]
+    A --> C[Periodic batched fetches: kind 0 + activity]
     B --> D[Kind 10040: Delegations]
     B --> E[Kind 30382: Rankings]
+    C --> F2[Kind 0: Profile Metadata]
     
-    C --> F[Name Resolution]
+    F2 --> F[Name Resolution]
     F --> G[name: Display Name]
     F --> H[nip05: NIP-05 Identifier]
     F --> I[lud16: Lightning Address]
@@ -149,10 +161,10 @@ graph TD
     J --> L[Service Key → Rankings]
     
     E --> M[User Rankings]
-    M --> N[Rank Filtering ≥95]
+    M --> N[Rank ≥35 + score ≥2 for search; listings use stored affinity etc.]
     M --> O[Name Reputation Aggregation]
     
-    G --> P[Name Scoring 1-3]
+    G --> P[Name affinity 0-4]
     H --> P
     I --> P
     
@@ -160,8 +172,8 @@ graph TD
     O --> Q
     
     Q --> R[Name Availability Check]
-    Q --> S[Reputation Grants]
-    Q --> T[Alternative Suggestions]
+    Q --> S[Future: reputation grants / boosts]
+    Q --> T[Client-specific flows]
 ```
 
 ## Key Patterns for Name Reputation
@@ -172,37 +184,40 @@ graph TD
 - **75-85**: Professionals (moderate protection)
 - **45-75**: Legitimate users (basic protection, need unique names)
 - **35-45**: Not bots (minimal protection)
-- **<35**: Filtered out (likely bots/inactive)
+- **Below 35**: Filtered out of name search / default lists (`MIN_RANK_VALUE`)
 
 ### 2. Name Affinity System
-Based on profile metadata fields:
-- **`name` field**: 2 points (primary identifier)
-- **`nip05` username prefix**: 1 point (extract "user" from "user@domain.com")
-- **`lud16` username prefix**: 1 point (extract "user" from "user@domain.com")
-- **Total**: 0-4 points
+Stored column `user_names.name_affinity` is computed in `insertUserName` (`services/database.js`):
 
-**Username Extraction**:
-- `nip05="alice@domain.com"` → extract "alice" for name occupation
-- `lud16="bob@lightning.com"` → extract "bob" for name occupation
-- Only the username prefix is used for name protection, not the full identifier
+- **`name`**: +2 if the field is non-empty after sanitization
+- **`nip05`**: +1 if present (local part before `@` is stored)
+- **`lud16`**: +1 if present (local part before `@` is stored)
+- **Total**: 0–4
 
-**Name Occupation Rules**:
-- Only occupy names with affinity ≥ 2
-- Prevents random lud16/nip05 from triggering occupation
-- Allows users to occupy multiple names if they have sufficient affinity for each
-- Breaks ties when users have identical ranks
+Whether a user **matches** a searched handle depends on the code path:
 
-**Name Validation**:
-- `name` field must be a valid slug (alphanumeric, hyphens, underscores only)
-- Invalid names like "First Last" (with spaces) are disregarded
-- Only valid slug-formatted names contribute to affinity scoring
+- **Default search** (no committee perspective): `services/aggregated-name-search.js` — row must match `name` exactly, `name` as `"query …"` prefix, **or** **both** `nip05` and `lud16` equal to the query; then the SQL `HAVING` clause requires the same score formula **≥ 2**.
+- **Search + perspective**: `routes/web.js` — broader `WHERE` (name, nip05, or lud16 match); same +2/+1 score; **≥ 2** to pass.
 
-**Edge Case - Multiple Name Occupation**:
-- User with `name="jake"` + `nip05="jack@domain.com"` + `lud16="jack@lightning.com"`: 
-  - Affinity for "jake" = 2 ✅ (occupies "jake" via name field)
-  - Affinity for "jack" = 2 ✅ (occupies "jack" via nip05/lud16 username prefixes)
-  - **Result**: User occupies both "jake" and "jack" names
-- User with `name="First Last"` (invalid slug): affinity = 0 ❌ (name field disregarded)
+NIP-05 identifiers are **not** DNS-verified here.
+
+**Worked examples (stored column)**:
+- `name="jack"` only → **2**
+- `name="jack"` + `nip05="jack@domain.com"` → **3**
+- All three fields aligned on `jack` → **4**
+- Only `lud16="jack@random.com"` (no `name`, no `nip05`) → **1**
+
+**Username extraction** (kind 0 parsing in `event-processor.js`):
+- `nip05="alice@domain.com"` → stored local part `alice`
+- `lud16="bob@lightning.com"` → stored local part `bob`
+
+**Name occupation rules (conceptual)**:
+- Default search requires enough points under the **SQL** score (minimum **2** in `HAVING`) **and** the stricter `WHERE` in `aggregated-name-search.js`
+- Under **default** search, a lone nip05 or lud16 cannot match (both nip05 and lud16 must equal the query for the nip05/lud16 path). **Perspective + search** can match with nip05+lud16 only if both equal the query (score 2)
+- Users can match **multiple** handles when `name` and nip05/lud16 locals disagree (see below)
+
+**Edge case — two handles on one pubkey**:
+- `name="jake"` + `nip05="jack@…"` + `lud16="jack@…"` can match searches for **jake** (via `name`) and **jack** (via nip05/lud16 when both equal the query)
 
 ### 3. Committee-Based Delegation Chain
 ```mermaid
@@ -230,24 +245,26 @@ graph TD
     
     Q --> S[Delegation Database]
     R --> T[Individual Ranking Database]
-    T --> U[Averaged Ranking Database]
+    T --> U[Averaged at query / materialized view]
     
-    G --> I[Name Reputation]
-    H --> I
+    G --> NR[Name Reputation]
+    H --> NR
 ```
 
-### 4. Name Protection Logic
-- **High Rank + High Name Affinity (3-4)**: Strong protection
-- **High Rank + Medium Name Affinity (2)**: Moderate protection
-- **High Rank + Low Name Affinity (0-1)**: No protection (affinity too low)
-- **Low Rank**: No protection (filtered out)
+### 4. Name Protection Logic (heuristic)
+
+For **listings** and **occupied-nym counts**, the code uses **stored** `user_names.name_affinity` (0–4) and **rank ≥ 35**. For **search**, it uses the **per-query** score in SQL (same +2/+1 weights) with **≥ 2**, plus path-specific `WHERE` clauses as above.
+
+- **High rank + stored affinity 3–4**: Strong signal
+- **High rank + stored affinity 2**: Moderate signal
+- **Stored affinity 0–1**: Excluded from occupied-nym counts; search usually will not return a row
+- **Rank below 35**: Excluded from typical search/list paths
 
 ## Data Quality Observations
 
 ### 1. Rank Distribution
-- **Rank 100**: Top tier users (most common in high-reputation users)
-- **Rank 98**: High tier users (second most common)
-- **Rank <95**: Filtered out for name protection purposes
+- **Rank 100 / 98**: Common among high-reputation users in observed relay data
+- **Below rank 35**: Excluded from aggregated name search and most list queries (`MIN_RANK_VALUE = 35`)
 
 ### 2. Name Affinity Distribution
 - **Affinity 4**: Users with all three name fields (name, nip05, lud16)
@@ -262,27 +279,18 @@ The hops system (0, 1, 2) indicates network distance for influence calculation:
 - **Hops 1**: One-degree connections
 - **Hops 2**: Two-degree connections
 
-### 4. Event Processing Requirements
-- **Real-time processing**: Events arrive continuously, no batching
-- **Filtering**: Only process events with rank ≥95
-- **Resilience**: Serve cached data when relay is down
+### 4. Processing model (this codebase)
 
-## Next Steps
+- **Kind 10040 / 30382**: Loaded via **`backfill-attestations.js`** and/or JSONL importers (`import-jsonl.js`, etc.) from ranking relays — **not** on a timer inside `RelayListener`. `DelegationHandler` / `RankingHandler` use `fetchLatestEvents` but are **not called** from `RelayListener.start()` today.
+- **Social relays** (`SOCIAL_RELAY_URLS`, defaults in `services/config.js`): Kind **0** and **activity** checks use **batched** `fetchLatestEvents` with cooldowns (README: **Background activity checks**); see `ProfileHandler` and `relay-listener.js` periodic loop.
+- **Ingestion**: Parsed **30382** rows are stored without a minimum rank filter; **search** and most listings apply **rank ≥ 35** where documented.
+- **Serving**: List/UI/API read **PostgreSQL**; relay calls are for refresh only.
 
-1. **Database Schema**: Implement the computed aggregation tables
-2. **Real-time Processing**: Build continuous event processing pipeline
-3. **Name Resolution**: Implement profile metadata ingestion (kind 0)
-4. **API Development**: Build name reputation endpoints
-5. **Reputation Grants**: Implement follow mechanism for name protection
+## See also
+
+- **[README.md](./README.md)** — setup, env vars, API list, activity scheduler
+- **[schema.sql](./schema.sql)** — authoritative DDL
 
 ## Conclusion
 
-The NymRank system uses Nostr events to build a name reputation database that protects high-reputation users' names. Key features:
-
-- **Real-time Processing**: Continuous event processing from relay
-- **Name Protection**: Warn users when trying to register protected names
-- **Reputation Grants**: Provide reputation boost for available names
-- **Name Affinity**: 1-4 points based on profile completeness (name=2, nip05=1, lud16=1)
-- **Rank Filtering**: Only consider users with rank ≥95 for protection
-
-This system enables social apps to make informed decisions about name registration, protecting established users while helping new users find available names.
+NymRank combines committee-sourced rankings (10040 → 30382) with profile metadata (kind 0) to reason about name occupancy. **Stored affinity** (0–4) feeds listing counts; **search** uses query-time scores in `aggregated-name-search.js` (default) and `routes/web.js` (perspective), with **rank ≥ 35** on search paths. Default **browse** lists are not rank-filtered in SQL. Client apps map average rank to UX using the registration outcome bands in the README.

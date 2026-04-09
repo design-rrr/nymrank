@@ -457,22 +457,6 @@ class Database {
     }
   }
 
-  // Health check method
-  async healthCheck() {
-    try {
-      const result = await this.query('SELECT NOW() as timestamp');
-      return {
-        status: 'healthy',
-        timestamp: result.rows[0].timestamp
-      };
-    } catch (error) {
-      return {
-        status: 'unhealthy',
-        error: error.message
-      };
-    }
-  }
-
   // Insert ranking data from kind 30382 events
   async insertRanking(data) {
     const query = `

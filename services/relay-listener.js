@@ -32,7 +32,7 @@ class RelayListener {
       // full historical backfill via negentropy. Run externally:
       //   strfry sync wss://nip85.brainstorm.world --filter '{"kinds":[10040,30382],"authors":[...]}' --dir down
       //   strfry export > events.jsonl
-      //   node import-events.js < events.jsonl
+      //   node import-jsonl.js < events.jsonl
       this.log.info('Delegations and attestations backfill requires external negentropy sync');
       
       // Get all ranked users from the database (populated during backfill)

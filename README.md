@@ -6,6 +6,27 @@ A Nostr-based reputation and name protection system using committee-based rankin
 
 NymRank leverages Web-of-Trust (WoT) reputation scores for users of a given namespace. Instead of relying on a single authority for name issuance, it aggregates rankings from a specific set of committee members to create a multi-perspective view of name occupancy. It includes a search tool to check if a specific name or handle is occupied by a well-reputed user.
 
+### Registration outcomes (for integrators)
+
+The API returns facts (`average_rank`, `name_affinity`, occupancy), not UX enums. A typical mapping for client apps:
+
+| Situation | Suggested stance |
+|-----------|------------------|
+| Name in `reserved_names` (DB) | **Not enforced by this API** — the table exists in `schema.sql`, but `GET /api/names` does not read it; handle reserved names in your client if needed. |
+| Occupied, **average rank ≥ 95** | Strong discouragement (elite-tier signal). |
+| Occupied, rank **75–94** | Discourage (established user). |
+| Occupied, rank **35–74** | Caution (weaker claim; your product decides resolution). |
+| Below rank **35** or not in ranked set | Weak signal; often treated like “available” for promotion flows. |
+| Not occupied with affinity ≥ 2 | Available for registration; optional boost flows are product-specific. |
+
+### Name affinity (summary)
+
+Affinity is **0–4**: non-empty `name` **2**, NIP-05 local part **1**, LUD-16 local part **1** (see `services/database.js`). Search uses a **per-query** score (exact name +2, name prefix +1, nip05 +1, lud16 +1) with **≥ 2** required; the **default** search (`services/aggregated-name-search.js`) only considers rows where the handle matches `name` / `name` prefix **or** **both** nip05 and lud16. **Perspective + search** (`routes/web.js`) uses a broader `WHERE` but the same score formula. Details: [event_analysis.md](./event_analysis.md).
+
+### Roadmap (not implemented in this server)
+
+Sybil-fee processing, automated payment receipts, and referrer/committee onboarding are **out of scope** for the current service. The **[`nymrank-boost/`](./nymrank-boost/)** package describes how client apps might combine API lookups with referrals and future paid boosts.
+
 ## Committee Members
 
 The system tracks delegation events from these initial committee members:
@@ -15,10 +36,11 @@ The system tracks delegation events from these initial committee members:
 - **vinny**: `2efaa715bbb46dd5be6b7da8d7700266d11674b913b8178addb5c2e63d987331`
 
 These keys are used to:
-- Track delegation events (kind 10040) from committee members
-- Track service key delegations for ranking
-- Process ranking events (kind 30382) from delegated service keys
-- Compute averaged rankings across committee members
+- Recognize delegation events (kind 10040) from committee members when ingested
+- Map service keys to committee members for ranking events (kind 30382)
+- Store per-member rows in `user_rankings` and average at query time (and via `precomputed_rankings`)
+
+**Ingestion note:** Kind **10040** and **30382** are loaded by **`backfill-attestations.js`** (and optional JSONL importers). `RelayListener` only runs periodic **kind 0 + activity** fetches on **social** relays; it does **not** poll ranking relays for new delegations or attestations (handlers exist but are not invoked from startup).
 
 ## Setup
 
@@ -38,10 +60,9 @@ node backfill-attestations.js
 ```
 
 This will:
-1. Use strfry sync with negentropy to download all delegations (kind 10040) and attestations (kind 30382) from all committee members
-2. Export to JSONL
-3. Import into PostgreSQL
-4. Clean up temporary files
+1. Use strfry sync with negentropy to download delegations (kind 10040) and attestations (kind 30382) from the configured relay for committee members
+2. Stream exported lines into the event processor (attestations limited to roughly the **past week** by timestamp in `backfill-attestations.js`)
+3. Persist into PostgreSQL (strfry db files remain under the strfry directory next to the repo — see script paths)
 
 This is a one-time operation that may take several minutes.
 
@@ -68,8 +89,8 @@ npm run dev
 ```
 
 The app will:
-1. Fetch profiles (kind 0) for all ranked users (daily refresh)
-2. Check for activity to update LastSeen display (7-day refresh)
+1. Fetch profiles (kind 0) for all ranked users (1-day cooldown between fetches)
+2. Check for activity to update last-seen (background window **10 days**; see **Background activity checks** below)
 3. Start the web UI on http://localhost:3333
 
 ## Features
@@ -82,11 +103,11 @@ The app will:
 
 ## Architecture
 
-- **Backfill**: Negentropy sync via strfry for efficient historical data transfer
-- **Profile Fetching**: Batched relay queries for kind 0 events with 1-day cooldown
-- **Activity Checking**: Batched relay queries for various event kind with 7-day cooldown
-- **Rankings**: Per-committee-member storage in DB, averaged on search/browse
-- **Materialized View**: `precomputed_rankings` for fast default list queries
+- **Backfill**: Negentropy sync via strfry for kind 10040 / 30382 into PostgreSQL (one-time or manual)
+- **Profile fetching**: Batched kind-0 queries on **social** relays with **1-day** cooldown (`profile_refresh_queue.last_profile_fetch`)
+- **Activity checking**: Batched queries (any kind) on **social** relays with a **10-day** window and tiered batch sizes (see **Background activity checks**)
+- **Rankings**: Stored per committee member; averages computed in SQL / materialized view — **not** continuously synced from ranking relays after backfill unless you re-run import tools
+- **Materialized View**: `precomputed_rankings` for fast default list queries, refreshed on ranking changes (see `services/database.js`)
 - **UI**: Fastify web server with search, browse, pagination, and perspective switching
 
 ## Database Schema
@@ -114,13 +135,13 @@ The app will:
 - `GET /api/names/:name` - Resolve name occupancy (`pubkey`, `average_rank`, `name_affinity`)
 - `GET /api/users/:pubkey/rank` - Averaged user rank and committee breakdown
 - `GET /api/users/:pubkey/activity` - Ad-hoc activity + profile refresh (hex or npub; same family as `/api/users/:pubkey/rank`)
-- `GET /healthz` - Health check
-- `GET /logs` - Recent server logs
+- `GET /log` - Recent in-memory log tail (used for light debugging; not a structured log API)
 
 ### Rankings list (`/`)
 
-- Default view and committee **perspective** filter hide accounts whose last-seen (activity or kind-0 profile time) is older than **365 days**, so the leaderboard is not dominated by long-dormant rows. Rows with **unknown** last-seen (no timestamps) still appear.
-- **Total occupied nyms** counts **everyone** who qualifies (`rank ≥ 35`, name affinity), independent of the 365-day list filter. **Page count** follows how many rows match the list (with the filter when enabled), so it stays in sync with results.
+- Default browse (`precomputed_rankings`) and **perspective** browse queries do **not** apply a `rank ≥ 35` SQL filter on the listed rows — anyone in `user_rankings` can appear. **Search** and **occupied-nym counts** use **`rank ≥ 35`** (and search uses the match score rules in [event_analysis.md](./event_analysis.md)).
+- Default and perspective views **hide** accounts whose last-seen (activity or kind-0 profile time) is older than **365 days** (`LISTING_HIDE_LAST_SEEN_OLDER_THAN_DAYS` in `routes/web.js`), so the table is not dominated by long-dormant rows. Rows with **unknown** last-seen (no timestamps) still appear.
+- **Total occupied nyms** counts distinct pubkeys with **`rank ≥ 35`** and **stored** `user_names.name_affinity ≥ 2**, independent of the 365-day list filter. **Page count** follows how many rows match the list (with the stale filter when enabled).
 - Append **`?include_stale=1`** or **`?all=1`** to show everyone. **Search** is not filtered.
 
 ### Background activity checks
@@ -135,7 +156,7 @@ Periodic scheduling: a **6 hour** `setInterval` triggers checks. While a run is 
 
 ## Environment Variables
 
-- `PORT`: Server port (default: 3000)
+- `PORT`: Server port (default: **3333**, see `app.js`)
 - `DB_HOST`: PostgreSQL host (default: localhost)
 - `DB_PORT`: PostgreSQL port (default: 5432)
 - `DB_NAME`: Database name (default: nymrank)
@@ -152,13 +173,7 @@ cp .env.example .env
 
 ## Relay Configuration
 
-### Ranking Relay
-- `wss://nip85.brainstorm.world`
-
-### Profile/Activity Relays
-- `wss://relay.damus.io`
-- `wss://nos.lol`
-- `wss://relay.primal.net`
+Values come from **`RANKING_RELAY_URLS`** and **`SOCIAL_RELAY_URLS`** (comma-separated). When unset, defaults are defined in **`services/config.js`** (`DEFAULT_RANKING_RELAYS`, `DEFAULT_SOCIAL_RELAYS` — the social list includes several public relays, not only three). See **`.env.example`** for a sample override.
 
 ## API Response Examples
 
